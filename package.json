@@ -1,0 +1,25 @@
+{
+  "name": "eye-oil-experiment-lab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "build": "vite build",
+    "preview": "node server.mjs --production"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "lucide-react": "^0.468.0",
+    "openai": "^7.23.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "0.170.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
