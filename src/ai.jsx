@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  ArrowRight,
+  Bot,
   CircleCheck,
   Eye,
   EyeOff,
@@ -48,10 +50,42 @@ const confidenceLabels = {
   high: '高，资料较充分',
 }
 
+const agentWorkspaceStates = {
+  observation: { label: '机会确认', task: '把上游市场机会整理成一个可继续推进的产品任务。', next: '生成并调校产品方案', nextView: 'demo', tool: 'generate-directions', toolLabel: '直接生成 3 个方案', planPrompt: '根据当前市场机会，先判断最值得推进的产品任务，列出缺口、风险和下一步要生成的产品方案。' },
+  demo: { label: '产品方案', task: '把市场机会转成可选择、可继续修改的产品方向。', next: '检查方案并进入设计', nextView: 'design', tool: 'generate-directions', toolLabel: '重新生成 3 个方案', planPrompt: '基于当前市场机会和已选产品方向，判断方案是否足够清晰，指出必须调整的内容，并给出进入包装设计前的行动顺序。' },
+  design: { label: '产品设计', task: '生成写实包装效果图，并在确认前细修局部内容。', next: '生成 2D 包装效果图', nextView: 'design', tool: 'generate-packaging', toolLabel: '生成 3 张 2D 效果图', runningLabel: '正在生成效果图…', planPrompt: '检查当前产品方案和包装设计状态，列出下一步最有价值的设计动作、需要确认的包装信息与不应擅自假定的部分。' },
+  delivery: { label: '产品交付', task: '把市场机会、产品方案和效果图整合成可下发的开发交付物。', next: '检查交付版本', nextView: 'delivery', planPrompt: '检查当前产品交付物是否足够让开发人员或供应商理解，指出缺失信息、最大风险和最优先补齐项。' },
+  records: { label: '项目记录', task: '回看已有项目，确定当前要继续推进的产品任务。', next: '返回当前工作台', nextView: 'observation', planPrompt: '根据当前项目记录，梳理哪些项目正在开发、哪些需要补资料，并建议最值得优先继续的一个任务。' },
+}
+
+const agentRoles = {
+  orchestrator: { label: '产品总控', responsibility: '串联机会、方案、设计与交付，确保每一步有明确的输入、决策和交接。', output: '下一步优先级与跨阶段风险' },
+  market: { label: '市场机会', responsibility: '判断上游信号是否构成可推进机会，明确证据、缺口与不成立的条件。', output: '机会判断与待验证问题' },
+  strategy: { label: '方案与定价', responsibility: '把机会转成可选择的产品方向，并区分产品假设、价格带与真实成本。', output: '产品方向与选择依据' },
+  packaging: { label: '包装创意', responsibility: '把已选方向转成可确认的包装视觉与结构要求，避免把效果图当作生产事实。', output: '2D 设计动作与确认项' },
+  sampling: { label: '打样验证', responsibility: '把待确认的规格、工艺和样品问题整理成开发验证项，不虚构供应商或报价。', output: '打样验证清单' },
+  review: { label: '交付审查', responsibility: '检查交付物能否被开发人员理解，明确缺失信息与不能下发的风险。', output: '交付完整度与补齐项' },
+}
+
+const stageAgentTeams = {
+  observation: { lead: 'market', support: ['orchestrator'] },
+  demo: { lead: 'strategy', support: ['orchestrator'] },
+  design: { lead: 'packaging', support: ['orchestrator'] },
+  delivery: { lead: 'review', support: ['sampling', 'orchestrator'] },
+  records: { lead: 'orchestrator', support: [] },
+}
+
 const advisorProviders = [
   { id: 'openai', label: 'OpenAI', keyLabel: 'OpenAI 分析 API Key', description: '适合结构化产品判断、策略复核和长链路分析。' },
+  { id: 'tikbit', label: 'TikBit', keyLabel: 'TikBit API Key', description: '通过 TikBit 的 OpenAI 兼容接口调用 GPT 等模型，接口地址已预设。' },
   { id: 'kimi', label: 'Kimi', keyLabel: 'Kimi API Key', description: 'Moonshot/Kimi OpenAI 兼容接口，适合中文长上下文分析。' },
   { id: 'custom', label: '自定义网关', keyLabel: '网关 API Key', description: '适合 OpenRouter、硅基流动、302、OneAPI 或自建 OpenAI 兼容代理。' },
+]
+
+const imageProviders = [
+  { id: 'openai', label: 'OpenAI', keyLabel: 'OpenAI 生图 API Key', description: '直接调用 OpenAI 生图接口。' },
+  { id: 'tikbit', label: 'TikBit', keyLabel: 'TikBit 生图 API Key', description: '通过 TikBit 调用 GPT Image，接口地址已预设。' },
+  { id: 'custom', label: '自定义网关', keyLabel: '生图网关 API Key', description: '用于兼容 OpenAI Images API 的其他网关。' },
 ]
 
 const recommendedModels = [
@@ -202,14 +236,56 @@ function AdviceList({ title, icon: Icon, items, tone = '' }) {
   )
 }
 
-export function AiAdvisor({ open, onClose, state }) {
-  const [health, setHealth] = useState({ status: 'loading', configured: false, advisorProvider: 'openai', advisorLabel: 'OpenAI', providerConfigured: {}, imageConfigured: false, model: '', imageModel: '' })
+function AgentMission({ currentView, onNavigate, onPlan, onExecute, loading, instruction }) {
+  const mission = agentWorkspaceStates[currentView] || agentWorkspaceStates.observation
+  const team = stageAgentTeams[currentView] || stageAgentTeams.observation
+  const lead = agentRoles[team.lead]
+  const support = team.support.map((roleId) => agentRoles[roleId]).filter(Boolean)
+  const [executing, setExecuting] = useState(false)
+  const [executionError, setExecutionError] = useState('')
+
+  const executeMission = async () => {
+    if (!mission.tool || executing) return
+    setExecuting(true)
+    setExecutionError('')
+    try {
+      const outcome = await onExecute({ tool: mission.tool, instruction })
+      if (outcome?.nextView) onNavigate(outcome.nextView)
+    } catch (error) {
+      setExecutionError(error.message || '智能体执行失败，请稍后重试。')
+    } finally {
+      setExecuting(false)
+    }
+  }
+
+  return <section className="agent-mission">
+    <div className="agent-mission-heading"><Bot size={18} /><div><span>当前任务</span><strong>{mission.label}</strong></div><em>执行中</em></div>
+    <p>{mission.task}</p>
+    <div className="agent-team" aria-label="当前智能体协作分工">
+      <div><span>本轮主责</span><strong>{lead.label}</strong></div>
+      <p>{lead.responsibility}</p>
+      {support.length > 0 && <small>协作：{support.map((role) => role.label).join('、')}。</small>}
+    </div>
+    <div className="agent-mission-next"><span>建议下一步</span><strong>{mission.next}</strong></div>
+    <div className="agent-mission-actions">
+      <Button variant="secondary" icon={Sparkles} onClick={() => onPlan(mission.planPrompt)} disabled={loading}>{loading ? '正在制定计划…' : '让智能体先规划'}</Button>
+      {mission.tool ? <Button icon={ArrowRight} onClick={executeMission} disabled={executing || loading}>{executing ? mission.runningLabel || '正在执行…' : mission.toolLabel}</Button> : <Button icon={ArrowRight} onClick={() => onNavigate(mission.nextView)}>打开执行界面</Button>}
+    </div>
+    {executionError && <p className="agent-mission-error">{executionError}</p>}
+    <small>{mission.tool ? `${mission.tool === 'generate-packaging' ? '点击生成会调用生图模型；' : '点击生成会调用文本模型；'}下方填写的任务要求会一并带入。` : '分析、生成方案和生图会先说明将要执行的内容；需要消耗模型或确认版本时，由你决定是否继续。'}</small>
+  </section>
+}
+
+export function AiAdvisor({ open, onClose, state, currentView = 'observation', onNavigate = () => {}, onExecute = async () => ({}) }) {
+  const [health, setHealth] = useState({ status: 'loading', configured: false, advisorProvider: 'openai', advisorLabel: 'OpenAI', providerConfigured: {}, imageConfigured: false, imageProvider: 'openai', imageLabel: 'OpenAI', imageBaseUrl: '', model: '', imageModel: '' })
   const [showSettings, setShowSettings] = useState(false)
   const [advisorProvider, setAdvisorProvider] = useState('openai')
   const [analysisApiKey, setAnalysisApiKey] = useState('')
   const [kimiBaseUrl, setKimiBaseUrl] = useState('https://api.moonshot.ai/v1')
   const [customBaseUrl, setCustomBaseUrl] = useState('')
   const [customProviderName, setCustomProviderName] = useState('自定义网关')
+  const [imageProvider, setImageProvider] = useState('openai')
+  const [imageBaseUrl, setImageBaseUrl] = useState('')
   const [imageApiKey, setImageApiKey] = useState('')
   const [selectedModel, setSelectedModel] = useState('gpt-6-sol')
   const [modelMode, setModelMode] = useState('recommended')
@@ -228,25 +304,31 @@ export function AiAdvisor({ open, onClose, state }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const stage = stages[state.activeStage]
+  const agentStageId = currentView === 'observation' ? 'research' : currentView === 'demo' ? 'concepts' : currentView === 'design' ? 'packaging' : currentView === 'delivery' ? 'outcome' : 'research'
+  const stage = stages.find((item) => item.id === agentStageId) || stages[0]
+  const agentTeam = stageAgentTeams[currentView] || stageAgentTeams.observation
+  const leadAgent = agentRoles[agentTeam.lead]
   const project = useMemo(() => buildProjectContext(state), [state])
 
   useEffect(() => {
     if (!open) return undefined
     const controller = new AbortController()
-    setHealth({ status: 'loading', configured: false, advisorProvider: 'openai', advisorLabel: 'OpenAI', providerConfigured: {}, imageConfigured: false, model: '', imageModel: '' })
+    setHealth({ status: 'loading', configured: false, advisorProvider: 'openai', advisorLabel: 'OpenAI', providerConfigured: {}, imageConfigured: false, imageProvider: 'openai', imageLabel: 'OpenAI', imageBaseUrl: '', model: '', imageModel: '' })
     fetch('/api/ai/health', { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error('服务状态不可用')
         return response.json()
       })
       .then((data) => {
-        const nextProvider = data.advisorProvider || 'openai'
-        const nextModel = data.model || defaultModelForProvider(nextProvider)
-        setHealth({ status: 'ready', configured: data.configured, advisorProvider: nextProvider, advisorLabel: data.advisorLabel || (nextProvider === 'kimi' ? 'Kimi' : 'OpenAI'), providerConfigured: data.providerConfigured || {}, imageConfigured: data.imageConfigured, model: nextModel, imageModel: data.imageModel })
+        const nextProvider = data.configured ? data.advisorProvider || 'tikbit' : 'tikbit'
+        const nextImageProvider = data.imageConfigured ? data.imageProvider || 'openai' : 'tikbit'
+        const nextModel = data.configured ? data.model || defaultModelForProvider(nextProvider) : defaultModelForProvider(nextProvider)
+        setHealth({ status: 'ready', configured: data.configured, advisorProvider: nextProvider, advisorLabel: data.configured ? data.advisorLabel || (nextProvider === 'tikbit' ? 'TikBit' : nextProvider === 'kimi' ? 'Kimi' : 'OpenAI') : 'TikBit', providerConfigured: data.providerConfigured || {}, imageConfigured: data.imageConfigured, imageProvider: nextImageProvider, imageLabel: data.imageConfigured ? data.imageLabel || 'OpenAI' : 'TikBit', imageBaseUrl: data.imageConfigured ? data.imageBaseUrl || '' : 'https://tikbit.ai/v1', model: nextModel, imageModel: data.imageModel })
         setAdvisorProvider(nextProvider)
         setCustomBaseUrl(data.customAdvisorBaseUrl || '')
         setCustomProviderName(data.customAdvisorName || '自定义网关')
+        setImageProvider(nextImageProvider)
+        setImageBaseUrl(data.imageConfigured ? data.imageBaseUrl || '' : 'https://tikbit.ai/v1')
         setSelectedModel(nextModel)
         setModelMode(nextProvider === 'custom' ? 'custom' : modeForModel(nextModel))
         setCustomModel(nextProvider === 'custom' || modeForModel(nextModel) === 'custom' ? nextModel : '')
@@ -257,7 +339,7 @@ export function AiAdvisor({ open, onClose, state }) {
       })
       .catch((fetchError) => {
         if (fetchError.name !== 'AbortError') {
-          setHealth({ status: 'error', configured: false, advisorProvider: 'openai', advisorLabel: 'OpenAI', providerConfigured: {}, imageConfigured: false, model: '', imageModel: '' })
+          setHealth({ status: 'error', configured: false, advisorProvider: 'openai', advisorLabel: 'OpenAI', providerConfigured: {}, imageConfigured: false, imageProvider: 'openai', imageLabel: 'OpenAI', imageBaseUrl: '', model: '', imageModel: '' })
         }
       })
     return () => controller.abort()
@@ -276,7 +358,7 @@ export function AiAdvisor({ open, onClose, state }) {
     setQuestion('')
     setResult(null)
     setError('')
-  }, [state.activeStage])
+  }, [currentView])
 
   const askAdvisor = async (prompt = question) => {
     const normalizedPrompt = prompt.trim()
@@ -291,7 +373,7 @@ export function AiAdvisor({ open, onClose, state }) {
       const response = await fetch('/api/ai/advice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stageId: stage.id, question: normalizedPrompt, project }),
+        body: JSON.stringify({ stageId: stage.id, agentRoleId: agentTeam.lead, question: normalizedPrompt, project }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.message || 'AI 分析失败')
@@ -307,11 +389,39 @@ export function AiAdvisor({ open, onClose, state }) {
     event.preventDefault()
     const modelToSave = modelMode === 'custom' ? customModel.trim() : selectedModel
     const imageModelToSave = imageModelMode === 'custom' ? customImageModel.trim() : selectedImageModel
+    const sharedTikBitKey = advisorProvider === 'tikbit' && imageProvider === 'tikbit' ? analysisApiKey.trim() : ''
+    const imageKeyToSave = imageApiKey.trim() || sharedTikBitKey
     const providerAlreadyConfigured = Boolean(health.providerConfigured?.[advisorProvider])
     const needsAnalysisKey = !providerAlreadyConfigured && !analysisApiKey.trim()
     const needsCustomBaseUrl = advisorProvider === 'custom' && !providerAlreadyConfigured && !customBaseUrl.trim()
-    const needsImageKey = !health.imageConfigured && !imageApiKey.trim()
-    if (savingConfig || !modelToSave || !imageModelToSave || needsAnalysisKey || needsCustomBaseUrl || needsImageKey) return
+    const imageProviderConfigured = health.imageConfigured && health.imageProvider === imageProvider
+    const needsImageKey = !imageProviderConfigured && !imageKeyToSave
+    const needsImageBaseUrl = imageProvider === 'custom' && !imageProviderConfigured && !imageBaseUrl.trim()
+    if (savingConfig) return
+    if (needsAnalysisKey) {
+      setConfigError(`请在上方输入完整的 ${selectedProviderInfo.label} API Key。`)
+      return
+    }
+    if (needsCustomBaseUrl) {
+      setConfigError('请输入分析网关的 Base URL。')
+      return
+    }
+    if (needsImageKey) {
+      setConfigError(`请为 ${selectedImageProviderInfo.label} 输入完整的生图 API Key。`)
+      return
+    }
+    if (needsImageBaseUrl) {
+      setConfigError('请输入生图网关的 Base URL。')
+      return
+    }
+    if (!modelToSave) {
+      setConfigError('请选择或填写一个文本分析模型。')
+      return
+    }
+    if (!imageModelToSave) {
+      setConfigError('请选择或填写一个生图模型。')
+      return
+    }
 
     setSavingConfig(true)
     setConfigError('')
@@ -325,14 +435,16 @@ export function AiAdvisor({ open, onClose, state }) {
           kimiBaseUrl: kimiBaseUrl.trim(),
           customBaseUrl: customBaseUrl.trim(),
           customName: customProviderName.trim(),
-          imageApiKey: imageApiKey.trim(),
+          imageProvider,
+          imageBaseUrl: imageBaseUrl.trim(),
+          imageApiKey: imageKeyToSave,
           model: modelToSave,
           imageModel: imageModelToSave,
         }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.message || '配置验证失败')
-      setHealth({ status: 'ready', configured: true, advisorProvider: data.advisorProvider || advisorProvider, advisorLabel: data.advisorLabel || selectedProviderInfo.label, providerConfigured: data.providerConfigured || { ...health.providerConfigured, [advisorProvider]: true }, imageConfigured: true, model: data.model, imageModel: data.imageModel })
+      setHealth({ status: 'ready', configured: true, advisorProvider: data.advisorProvider || advisorProvider, advisorLabel: data.advisorLabel || selectedProviderInfo.label, providerConfigured: data.providerConfigured || { ...health.providerConfigured, [advisorProvider]: true }, imageConfigured: true, imageProvider: data.imageProvider || imageProvider, imageLabel: data.imageLabel || selectedImageProviderInfo.label, imageBaseUrl: data.imageBaseUrl || imageBaseUrl, model: data.model, imageModel: data.imageModel })
       setAnalysisApiKey('')
       setImageApiKey('')
       setShowAnalysisKey(false)
@@ -386,8 +498,8 @@ export function AiAdvisor({ open, onClose, state }) {
   }
 
   const loadAccountModels = async (scope = 'text') => {
-    const keyForScope = scope === 'image' ? imageApiKey.trim() : analysisApiKey.trim()
-    const configuredForScope = scope === 'image' ? health.imageConfigured : Boolean(health.providerConfigured?.[advisorProvider])
+    const keyForScope = scope === 'image' ? (imageApiKey.trim() || (advisorProvider === 'tikbit' && imageProvider === 'tikbit' ? analysisApiKey.trim() : '')) : analysisApiKey.trim()
+    const configuredForScope = scope === 'image' ? health.imageConfigured && health.imageProvider === imageProvider : Boolean(health.providerConfigured?.[advisorProvider])
     if (loadingModels || (!configuredForScope && !keyForScope)) return
     setLoadingModels(true)
     setConfigError('')
@@ -402,7 +514,9 @@ export function AiAdvisor({ open, onClose, state }) {
           kimiBaseUrl: kimiBaseUrl.trim(),
           customBaseUrl: customBaseUrl.trim(),
           customName: customProviderName.trim(),
-          imageApiKey: imageApiKey.trim(),
+          imageProvider,
+          imageBaseUrl: imageBaseUrl.trim(),
+          imageApiKey: keyForScope,
         }),
       })
       const data = await response.json()
@@ -451,21 +565,26 @@ export function AiAdvisor({ open, onClose, state }) {
       ? Boolean(accountImageModels.length && selectedImageModel)
       : Boolean(selectedImageModel)
   const selectedProviderInfo = advisorProviders.find((provider) => provider.id === advisorProvider) || advisorProviders[0]
+  const selectedImageProviderInfo = imageProviders.find((provider) => provider.id === imageProvider) || imageProviders[0]
   const advisorProviderConfigured = Boolean(health.providerConfigured?.[advisorProvider])
+  const imageProviderConfigured = health.imageConfigured && health.imageProvider === imageProvider
   const advisorModelModes = advisorProvider === 'custom'
     ? modelModes.filter((mode) => mode.id === 'account' || mode.id === 'custom')
     : modelModes
   const missingCustomBaseUrl = advisorProvider === 'custom' && !advisorProviderConfigured && !customBaseUrl.trim()
+  const sharedTikBitKeyAvailable = advisorProvider === 'tikbit' && imageProvider === 'tikbit' && Boolean(analysisApiKey.trim())
+  const missingImageBaseUrl = imageProvider === 'custom' && !imageProviderConfigured && !imageBaseUrl.trim()
+  const missingImageKey = !imageProviderConfigured && !imageApiKey.trim() && !sharedTikBitKeyAvailable
 
   if (!open) return null
 
   return (
     <div className="drawer-backdrop" onMouseDown={onClose} role="presentation">
-      <aside className="ai-drawer" onMouseDown={(event) => event.stopPropagation()} aria-label="AI产品顾问">
+      <aside className="ai-drawer" onMouseDown={(event) => event.stopPropagation()} aria-label="产品开发智能体">
         <div className="ai-drawer-head">
           <div>
-            <span className="eyebrow"><Sparkles size={13} />AI 产品顾问</span>
-            <h2>{stage.label}复核</h2>
+            <span className="eyebrow"><Bot size={13} />产品开发智能体</span>
+            <h2>我来协调整个产品任务</h2>
           </div>
           <div className="ai-head-actions">
             <button
@@ -476,15 +595,15 @@ export function AiAdvisor({ open, onClose, state }) {
             >
               <Settings2 size={18} />
             </button>
-            <button className="icon-button" onClick={onClose} aria-label="关闭AI产品顾问"><X size={19} /></button>
+            <button className="icon-button" onClick={onClose} aria-label="关闭产品开发智能体"><X size={19} /></button>
           </div>
         </div>
 
         <div className={`ai-service-state ${health.configured ? 'ready' : ''}`}>
           <span className="ai-status-dot" />
           <div>
-            <strong>{health.status === 'loading' ? '正在检查服务' : health.configured ? `${health.advisorLabel || 'AI'} 已连接` : 'AI 分析尚未配置'}</strong>
-            <span>{health.configured || health.imageConfigured ? `${health.configured ? `${health.advisorLabel || 'AI'} · ${health.model}` : '分析未配置'} · ${health.imageConfigured ? `OpenAI 生图 · ${health.imageModel}` : '生图未配置'}` : '本地服务不会把密钥发送到浏览器'}</span>
+            <strong>{health.status === 'loading' ? '正在检查智能体服务' : health.configured ? `${health.advisorLabel || 'AI'} 智能体已连接` : '智能体模型尚未配置'}</strong>
+            <span>{health.configured || health.imageConfigured ? `${health.configured ? `${health.advisorLabel || 'AI'} · ${health.model}` : '分析未配置'} · ${health.imageConfigured ? `${health.imageLabel || '生图'} · ${health.imageModel}` : '生图未配置'} · 会读取当前项目状态后再规划动作。` : '本地服务不会把密钥发送到浏览器'}</span>
           </div>
         </div>
 
@@ -535,7 +654,13 @@ export function AiAdvisor({ open, onClose, state }) {
                   {showAnalysisKey ? <EyeOff size={17} /> : <Eye size={17} />}
                 </button>
               </div>
-              <small>用于市场、人群、竞品、定位等文本分析。</small>
+              <small className={analysisApiKey.trim() ? 'ai-key-ready' : ''}>
+                {analysisApiKey.trim()
+                  ? '已收到密钥，可以点击下方按钮验证。'
+                  : advisorProviderConfigured
+                    ? '已经配置；留空会保留现有密钥。'
+                    : '用于市场、人群、竞品、定位等文本分析。'}
+              </small>
             </label>
 
             {advisorProvider === 'kimi' && (
@@ -582,25 +707,79 @@ export function AiAdvisor({ open, onClose, state }) {
               </>
             )}
 
-            <label className="ai-config-field">
-              <span>生图 API Key</span>
-              <div className="ai-secret-input">
-                <input
-                  type={showImageKey ? 'text' : 'password'}
-                  value={imageApiKey}
-                  onChange={(event) => setImageApiKey(event.target.value)}
-                  placeholder={health.imageConfigured ? '已配置；留空将保留现有生图密钥' : 'sk-...'}
-                  autoComplete="new-password"
-                  spellCheck="false"
-                  maxLength={512}
-                  disabled={savingConfig}
-                />
-                <button type="button" onClick={() => setShowImageKey((value) => !value)} aria-label={showImageKey ? '隐藏生图密钥' : '显示生图密钥'}>
-                  {showImageKey ? <EyeOff size={17} /> : <Eye size={17} />}
-                </button>
+            {advisorProvider === 'tikbit' && (
+              <label className="ai-config-field">
+                <span>TikBit Base URL</span>
+                <input value="https://tikbit.ai/v1" readOnly aria-readonly="true" />
+                <small>已按 TikBit 官方 OpenAI Chat Completions 接口预设。</small>
+              </label>
+            )}
+
+            <fieldset className="ai-model-picker">
+              <legend><Images size={14} />生图供应商</legend>
+              <div className="ai-model-tabs" role="tablist" aria-label="生图供应商">
+                {imageProviders.map((provider) => (
+                  <button
+                    key={provider.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={imageProvider === provider.id}
+                    className={imageProvider === provider.id ? 'active' : ''}
+                    onClick={() => { setImageProvider(provider.id); setImageBaseUrl(provider.id === 'tikbit' ? 'https://tikbit.ai/v1' : ''); setAccountImageModels([]); setConfigError('') }}
+                    disabled={savingConfig}
+                  >
+                    {provider.label}
+                  </button>
+                ))}
               </div>
-              <small>用于包装设计图生成；需要 OpenAI 项目密钥和生图权限。</small>
-            </label>
+              <p className="ai-inline-note">{selectedImageProviderInfo.description}</p>
+            </fieldset>
+
+            {imageProvider === 'tikbit' && (
+              <label className="ai-config-field">
+                <span>TikBit 生图 Base URL</span>
+                <input value="https://tikbit.ai/v1" readOnly aria-readonly="true" />
+                <small>首次同时配置分析与生图时，生图密钥可留空并使用上方同一个 TikBit Key。</small>
+              </label>
+            )}
+
+            {imageProvider === 'custom' && (
+              <label className="ai-config-field">
+                <span>生图网关 Base URL</span>
+                <input value={imageBaseUrl} onChange={(event) => setImageBaseUrl(event.target.value)} placeholder="例如 https://example.com/v1" spellCheck="false" maxLength={240} disabled={savingConfig} />
+                <small>需要兼容 OpenAI Images API。</small>
+              </label>
+            )}
+
+            {advisorProvider === 'tikbit' && imageProvider === 'tikbit' ? (
+              <div className="ai-shared-key-note">
+                <ShieldCheck size={16} />
+                <div>
+                  <strong>生图自动使用上方 TikBit Key</strong>
+                  <span>保存时仍会分别验证文本模型和生图模型。</span>
+                </div>
+              </div>
+            ) : (
+              <label className="ai-config-field">
+                <span>{selectedImageProviderInfo.keyLabel}</span>
+                <div className="ai-secret-input">
+                  <input
+                    type={showImageKey ? 'text' : 'password'}
+                    value={imageApiKey}
+                    onChange={(event) => setImageApiKey(event.target.value)}
+                    placeholder={imageProviderConfigured ? '已配置；留空将保留现有生图密钥' : 'sk-...'}
+                    autoComplete="new-password"
+                    spellCheck="false"
+                    maxLength={512}
+                    disabled={savingConfig}
+                  />
+                  <button type="button" onClick={() => setShowImageKey((value) => !value)} aria-label={showImageKey ? '隐藏生图密钥' : '显示生图密钥'}>
+                    {showImageKey ? <EyeOff size={17} /> : <Eye size={17} />}
+                  </button>
+                </div>
+                <small>用于包装设计图生成与局部修改。</small>
+              </label>
+            )}
 
             <fieldset className="ai-model-picker">
               <legend>模型来源</legend>
@@ -691,7 +870,7 @@ export function AiAdvisor({ open, onClose, state }) {
                 </label>
               ) : imageModelMode === 'account' ? (
                 <div className="ai-account-models">
-                  <Button type="button" variant="secondary" icon={loadingModels ? RefreshCw : Images} onClick={() => loadAccountModels('image')} disabled={loadingModels || (!health.imageConfigured && !imageApiKey.trim())} className="full-width">
+                  <Button type="button" variant="secondary" icon={loadingModels ? RefreshCw : Images} onClick={() => loadAccountModels('image')} disabled={loadingModels || (!imageProviderConfigured && !imageApiKey.trim() && !sharedTikBitKeyAvailable)} className="full-width">
                     {loadingModels ? '正在读取模型' : accountImageModels.length ? '重新读取账号模型' : '读取账号生图模型'}
                   </Button>
                   {accountImageModels.length > 0 && (
@@ -715,15 +894,16 @@ export function AiAdvisor({ open, onClose, state }) {
             </fieldset>
 
             {configError && <p className="ai-config-error"><TriangleAlert size={14} />{configError}</p>}
-            <Button icon={ShieldCheck} className="full-width" disabled={savingConfig || !canSaveModel || !canSaveImageModel || (!advisorProviderConfigured && !analysisApiKey.trim()) || missingCustomBaseUrl || (!health.imageConfigured && !imageApiKey.trim())}>
+            <Button icon={ShieldCheck} className="full-width" disabled={savingConfig}>
               {savingConfig ? '正在验证连接' : '验证并保存模型'}
             </Button>
             <p className="ai-config-note">密钥仅保存在当前电脑的本地配置文件中，页面不会读取或回显已保存的密钥。</p>
           </form>
         ) : (
           <>
+            <AgentMission currentView={currentView} onNavigate={onNavigate} onPlan={askAdvisor} onExecute={onExecute} loading={loading} instruction={question} />
             <section className="ai-prompt-section">
-              <h3>快速复核</h3>
+              <h3>交给智能体</h3>
               <div className="ai-quick-actions">
                 {quickActions[stage.id].map((action) => (
                   <button key={action} disabled={!health.configured || loading} onClick={() => askAdvisor(action)}>
@@ -732,17 +912,17 @@ export function AiAdvisor({ open, onClose, state }) {
                 ))}
               </div>
               <label className="ai-question">
-                <span>你的问题</span>
+                <span>这次要完成什么</span>
                 <textarea
                   value={question}
                   onChange={(event) => setQuestion(event.target.value)}
-                  placeholder={`针对“${stage.label}”提出一个具体问题`}
+                  placeholder={`例如：围绕当前${agentWorkspaceStates[currentView]?.label || '项目'}，给我一套可执行的推进方案`}
                   maxLength={500}
                   disabled={!health.configured || loading}
                 />
               </label>
               <Button icon={Send} onClick={() => askAdvisor()} disabled={!question.trim() || !health.configured || loading} className="full-width">
-                {loading ? '正在分析' : '让 AI 复核'}
+                {loading ? '正在规划' : '分析并制定行动计划'}
               </Button>
               <p className="ai-privacy-note"><ShieldCheck size={13} />仅发送当前项目的结构化字段，不发送本地文件或图片。</p>
             </section>
@@ -767,7 +947,7 @@ export function AiAdvisor({ open, onClose, state }) {
               {result && (
                 <div className="ai-result">
                   <div className="ai-summary">
-                    <span>AI 结论</span>
+                    <span>{leadAgent.label}判断</span>
                     <h3>{result.advice.summary}</h3>
                     <small>判断信心：{confidenceLabels[result.advice.confidence]}</small>
                   </div>
@@ -775,7 +955,7 @@ export function AiAdvisor({ open, onClose, state }) {
                   <AdviceList title="主要风险" icon={TriangleAlert} items={result.advice.risks} tone="risk" />
                   <AdviceList title="验证清单" icon={ShieldCheck} items={result.advice.validations} />
                   <AdviceList title="判断依据" icon={Sparkles} items={result.advice.basis} tone="basis" />
-                  <p className="ai-result-meta">{result.provider === 'kimi' ? 'Kimi' : result.provider === 'custom' ? customProviderName || '自定义网关' : 'OpenAI'} · {result.model} · {new Date(result.generatedAt).toLocaleString('zh-CN')}</p>
+                  <p className="ai-result-meta">{agentRoles[result.agentRoleId]?.label || leadAgent.label} · {result.provider === 'tikbit' ? 'TikBit' : result.provider === 'kimi' ? 'Kimi' : result.provider === 'custom' ? customProviderName || '自定义网关' : 'OpenAI'} · {result.model} · {new Date(result.generatedAt).toLocaleString('zh-CN')}</p>
                 </div>
               )}
             </div>

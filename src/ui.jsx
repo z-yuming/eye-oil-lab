@@ -13,7 +13,7 @@ export function StageHeading({ title, description, actions }) {
     <div className="stage-heading">
       <div>
         <h1>{title}</h1>
-        <p>{description}</p>
+        {description && <p>{description}</p>}
       </div>
       {actions && <div className="heading-actions">{actions}</div>}
     </div>

@@ -1,3 +1,5 @@
+import { getProductProfile } from './product-profiles'
+
 export const stages = [
   { id: 'research', label: '市场调研', short: '市场' },
   { id: 'audience', label: '人群分析', short: '人群' },
@@ -15,6 +17,7 @@ export const defaultPackagingDesign = {
   style: '自然植萃 · 现代简约',
   palette: ['#c9685a', '#f4f1e9', '#58725c', '#242826'],
   finishes: ['哑光覆膜'],
+  supportingConstraints: [],
   description: '天然植萃成分，温和修护；简约自然的专业护肤风格，突出植物元素与便携滚珠体验。',
   generatedConcepts: [],
   selectedConceptId: 'seed-natural',
@@ -28,8 +31,6 @@ export const defaultPackagingDesign = {
   canvasZoom: 100,
   localEditPrompt: '植物插画缩小20%，保持其他部位不变',
   referenceImages: [],
-  gateChecks: [],
-  gateConfirmedAt: '',
   partSettings: {
     carton: { visible: true, locked: true },
     illustration: { visible: true, locked: false },
@@ -874,8 +875,10 @@ export const opportunityResearch = {
 }
 
 export function getMarketOpportunities(customOpportunities = []) {
-  const seeded = marketOpportunities.map((opportunity) => ({ ...opportunity, ...(opportunityResearch[opportunity.id] || {}) }))
-  return [...seeded, ...customOpportunities]
+  const customById = new Map(customOpportunities.map((opportunity) => [opportunity.id, opportunity]))
+  const seeded = marketOpportunities.map((opportunity) => ({ ...opportunity, ...(opportunityResearch[opportunity.id] || {}), ...(customById.get(opportunity.id) || {}) }))
+  const seededIds = new Set(seeded.map((opportunity) => opportunity.id))
+  return [...seeded, ...customOpportunities.filter((opportunity) => !seededIds.has(opportunity.id))]
 }
 
 export function getMarketOpportunity(opportunityId, customOpportunities = []) {
@@ -917,6 +920,7 @@ function getOpportunityForTemplate(templateId) {
 
 function cloneDefaultPackaging(template) {
   const packaging = template.packaging
+  const profile = getProductProfile(template.id)
   return {
     ...defaultPackagingDesign,
     brandName: packaging.brandName,
@@ -924,8 +928,8 @@ function cloneDefaultPackaging(template) {
     style: packaging.style,
     palette: [...packaging.palette],
     description: packaging.description,
+    localEditPrompt: profile.editPrompt,
     generatedConcepts: [],
-    gateChecks: [],
     referenceImages: [],
     partSettings: Object.fromEntries(Object.entries(defaultPackagingDesign.partSettings).map(([key, value]) => [key, { ...value }])),
   }
@@ -984,6 +988,7 @@ export function createProjectState(templateId = 'eye-oil', opportunityId, direct
     supplierLibraryMeta: null,
     supplierLibraryHistory: [],
     packagingDesign: cloneDefaultPackaging(template),
+    deliveryReport: null,
     readiness: [0, 1, 2, 3],
   }
 }

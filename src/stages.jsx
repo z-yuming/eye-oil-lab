@@ -40,7 +40,6 @@ import {
   getMarketOpportunity,
   getProductDirection,
   marketTrend,
-  packagingGateItems,
   packagingOptions,
   painPoints,
   positioningOptions,
@@ -50,6 +49,7 @@ import {
   supplierSourceStats,
   trendYears,
 } from './data'
+import { getProductProfile } from './product-profiles'
 import { mergeSupplierLibrary, parseSupplierFiles } from './supplier-import'
 import {
   Button,
@@ -628,15 +628,10 @@ export function PositioningStage({ state, updateState, confirmStage }) {
 }
 
 export function PackagingStage({ state, updateState, confirmStage, notify, openAiSettings }) {
-  const selected = packagingOptions.find((item) => item.id === state.selectedPackaging) || packagingOptions[0]
-  const twoDConfirmed = Boolean(state.packagingDesign?.confirmed2D)
-  const gateChecks = Array.isArray(state.packagingDesign?.gateChecks) ? state.packagingDesign.gateChecks : []
-  const gateReady = packagingGateItems.every((item) => gateChecks.includes(item.id))
-  const packagingReady = twoDConfirmed && gateReady
-  const stageDone = isDone(state, 5) && packagingReady
+  const profile = getProductProfile(state.templateId)
   const fallback = <div className="packaging-loading"><span className="ai-spinner" /><strong>正在载入AI包装设计工作台</strong></div>
   const main = <Suspense fallback={fallback}><PackagingStudio state={state} updateState={updateState} confirmStage={confirmStage} notify={notify} openAiSettings={openAiSettings} /></Suspense>
-  return <><div className="packaging-workspace-main">{main}</div><ConfirmBar done={stageDone} disabled={!packagingReady} label="确认包装方案" note={packagingReady ? `2D已确认 · ${gateChecks.length}/${packagingGateItems.length}项验收通过 · 当前包材：${selected.name}` : `请先完成2D确认与打样前验收（${gateChecks.length}/${packagingGateItems.length}）。`} onConfirm={confirmStage} /></>
+  return <div className="packaging-workspace-main">{main}</div>
 }
 
 function supplierSearchText(supplier) {

@@ -32,7 +32,8 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
-import { defaultPackagingDesign, packagingGateItems, packagingOptions } from './data'
+import { defaultPackagingDesign, getMarketOpportunity, getProductDirection, packagingOptions } from './data'
+import { createStarterConcepts, getPackagingParts, getProductProfile } from './product-profiles'
 import { Button, Field, StageHeading } from './ui'
 
 const finishOptions = ['哑光覆膜', '烫金', '局部UV', '压纹', '特种纸']
@@ -54,8 +55,13 @@ const defaultPartSettings = Object.fromEntries(packagingParts.map((part) => [par
   locked: ['carton', 'brand', 'product'].includes(part.id),
 }]))
 
-function normalizePartSettings(settings = {}) {
-  return Object.fromEntries(packagingParts.map((part) => [part.id, {
+function getPartVisibilityLabel(part, visible) {
+  if (part.kind === 'text') return visible ? '隐藏' : '显示'
+  return visible ? '隐藏辅助标记' : '显示辅助标记'
+}
+
+function normalizePartSettings(settings = {}, parts = packagingParts) {
+  return Object.fromEntries(parts.map((part) => [part.id, {
     ...defaultPartSettings[part.id],
     ...(settings[part.id] || {}),
   }]))
@@ -307,9 +313,9 @@ function PackagingPreview3D({ design, concept }) {
     if (!host || !canvas) return undefined
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color('#f8faf9')
+    scene.background = new THREE.Color('#edf1ef')
     const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100)
-    camera.position.set(5.4, 3.6, 8.4)
+    camera.position.set(6.8, 4.6, 9.8)
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, preserveDrawingBuffer: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -317,32 +323,40 @@ function PackagingPreview3D({ design, concept }) {
     renderer.shadowMap.enabled = true
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
     renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.05
+    renderer.toneMappingExposure = 0.98
+
+    const environmentGenerator = new THREE.PMREMGenerator(renderer)
+    const environmentTarget = environmentGenerator.fromScene(new RoomEnvironment(), 0.035)
+    scene.environment = environmentTarget.texture
+    environmentGenerator.dispose()
 
     const controls = new OrbitControls(camera, canvas)
-    controls.target.set(0, 1.75, 0)
+    controls.target.set(0, 2.05, 0)
     controls.enableDamping = true
     controls.dampingFactor = 0.07
-    controls.minDistance = 5.2
-    controls.maxDistance = 12
+    controls.minDistance = 6.2
+    controls.maxDistance = 14
     controls.maxPolarAngle = Math.PI / 2.04
     controls.autoRotate = autoRotate
     controls.autoRotateSpeed = 0.72
     controls.saveState()
 
-    scene.add(new THREE.HemisphereLight('#ffffff', '#ccd4cf', 2.35))
-    const keyLight = new THREE.DirectionalLight('#ffffff', 4.2)
-    keyLight.position.set(4.5, 8, 6)
+    scene.add(new THREE.HemisphereLight('#ffffff', '#aebbb5', 1.6))
+    const keyLight = new THREE.DirectionalLight('#fffdf8', 3.8)
+    keyLight.position.set(4.8, 8.5, 6.2)
     keyLight.castShadow = true
     keyLight.shadow.mapSize.set(1024, 1024)
     scene.add(keyLight)
-    const fillLight = new THREE.DirectionalLight('#dfede6', 2.2)
+    const fillLight = new THREE.DirectionalLight('#dfece6', 1.8)
     fillLight.position.set(-5, 4, 4)
     scene.add(fillLight)
+    const rimLight = new THREE.DirectionalLight('#fff1e4', 1.35)
+    rimLight.position.set(4, 5, -4)
+    scene.add(rimLight)
 
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(30, 30),
-      new THREE.ShadowMaterial({ color: '#82928b', opacity: 0.16 }),
+      new THREE.MeshStandardMaterial({ color: '#e7ece9', roughness: 0.96, metalness: 0 }),
     )
     floor.rotation.x = -Math.PI / 2
     floor.receiveShadow = true
@@ -350,91 +364,135 @@ function PackagingPreview3D({ design, concept }) {
 
     const palette = concept?.palette || design.palette
     const artworkTexture = createArtworkTexture({ ...design, palette })
-    const paperMaterial = new THREE.MeshStandardMaterial({ color: palette[1] || '#f4f1e9', roughness: 0.82 })
-    const sideMaterial = new THREE.MeshStandardMaterial({ color: palette[0] || '#c9685a', roughness: 0.72 })
-    const darkMaterial = new THREE.MeshStandardMaterial({ color: palette[3] || '#242826', roughness: 0.58 })
-    const frontMaterial = new THREE.MeshStandardMaterial({ map: artworkTexture, roughness: 0.78 })
+    artworkTexture.anisotropy = renderer.capabilities.getMaxAnisotropy()
+    const paperBumpTexture = createPaperBumpTexture()
+    const capRidgeTexture = createCapRidgeTexture()
+    const paperMaterial = new THREE.MeshPhysicalMaterial({
+      color: palette[1] || '#f4f1e9',
+      roughness: 0.72,
+      clearcoat: 0.12,
+      clearcoatRoughness: 0.68,
+      bumpMap: paperBumpTexture,
+      bumpScale: 0.018,
+    })
+    const sideMaterial = new THREE.MeshPhysicalMaterial({
+      color: palette[0] || '#c9685a',
+      roughness: 0.62,
+      clearcoat: 0.18,
+      clearcoatRoughness: 0.5,
+      bumpMap: paperBumpTexture,
+      bumpScale: 0.012,
+    })
+    const frontMaterial = new THREE.MeshPhysicalMaterial({
+      map: artworkTexture,
+      roughness: 0.67,
+      clearcoat: 0.14,
+      clearcoatRoughness: 0.62,
+      bumpMap: paperBumpTexture,
+      bumpScale: 0.012,
+    })
 
     const boxGroup = new THREE.Group()
+    const cartonGeometry = new RoundedBoxGeometry(1.72, 4.28, 1.08, 8, 0.045)
     const carton = new THREE.Mesh(
-      new THREE.BoxGeometry(1.8, 4.35, 1.12),
-      [sideMaterial, paperMaterial, paperMaterial, darkMaterial, frontMaterial, paperMaterial],
+      cartonGeometry,
+      paperMaterial,
     )
-    carton.position.y = 2.18
+    carton.position.y = 2.16
     carton.castShadow = true
     carton.receiveShadow = true
     boxGroup.add(carton)
-    boxGroup.position.x = 1.05
-    boxGroup.rotation.y = -0.2
+    const cartonFront = new THREE.Mesh(new THREE.PlaneGeometry(1.64, 4.18), frontMaterial)
+    cartonFront.position.set(0, 2.16, 0.546)
+    cartonFront.castShadow = true
+    boxGroup.add(cartonFront)
+    const cartonSide = new THREE.Mesh(new THREE.PlaneGeometry(1.02, 4.18), sideMaterial)
+    cartonSide.position.set(0.866, 2.16, 0)
+    cartonSide.rotation.y = Math.PI / 2
+    cartonSide.castShadow = true
+    boxGroup.add(cartonSide)
+    const cartonEdges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(cartonGeometry, 22),
+      new THREE.LineBasicMaterial({ color: palette[3] || '#242826', transparent: true, opacity: 0.12 }),
+    )
+    cartonEdges.position.y = 2.16
+    boxGroup.add(cartonEdges)
+    boxGroup.position.set(1.05, 0.01, 0.45)
+    boxGroup.rotation.y = -0.16
     boxGroup.visible = boxVisible
     scene.add(boxGroup)
 
     const bottleGroup = new THREE.Group()
     const glassMaterial = new THREE.MeshPhysicalMaterial({
-      color: '#8e4d12',
-      roughness: 0.18,
-      metalness: 0.05,
-      transmission: 0.18,
+      color: '#8c3d08',
+      roughness: 0.11,
+      metalness: 0,
+      transmission: 0.52,
+      thickness: 0.16,
+      ior: 1.49,
+      attenuationColor: new THREE.Color('#713005'),
+      attenuationDistance: 1.45,
+      clearcoat: 1,
+      clearcoatRoughness: 0.08,
       transparent: true,
-      opacity: 0.92,
+      opacity: 1,
+      side: THREE.DoubleSide,
     })
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.66, 2.65, 48), glassMaterial)
-    body.position.y = 1.48
-    body.castShadow = true
-    bottleGroup.add(body)
-    const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.61, 0.32, 48), glassMaterial)
-    shoulder.position.y = 2.96
-    shoulder.castShadow = true
-    bottleGroup.add(shoulder)
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.55, 48), glassMaterial)
-    neck.position.y = 3.36
-    neck.castShadow = true
-    bottleGroup.add(neck)
-    const collar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.49, 0.49, 0.36, 48),
-      new THREE.MeshStandardMaterial({ color: '#ede9e1', roughness: 0.5 }),
+    const bottleProfile = [
+      [0, 0.06], [0.49, 0.06], [0.57, 0.13], [0.59, 0.23],
+      [0.59, 2.38], [0.57, 2.52], [0.5, 2.67], [0.41, 2.82],
+      [0.39, 3.28], [0, 3.28],
+    ].map(([radius, height]) => new THREE.Vector2(radius, height))
+    const bottle = new THREE.Mesh(new THREE.LatheGeometry(bottleProfile, 64), glassMaterial)
+    bottle.castShadow = true
+    bottle.receiveShadow = true
+    bottleGroup.add(bottle)
+    const liquid = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.515, 0.515, 2.22, 64),
+      new THREE.MeshPhysicalMaterial({ color: '#9d4c0a', roughness: 0.2, transmission: 0.1, transparent: true, opacity: 0.76 }),
     )
-    collar.position.y = 3.73
-    collar.castShadow = true
-    bottleGroup.add(collar)
-    const roller = new THREE.Mesh(
-      new THREE.SphereGeometry(0.36, 48, 32),
-      new THREE.MeshStandardMaterial({ color: '#c9cdcc', metalness: 0.86, roughness: 0.16 }),
+    liquid.position.y = 1.23
+    bottleGroup.add(liquid)
+    const labelArc = Math.PI * 0.82
+    const labelBacking = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.596, 0.596, 1.7, 64, 1, true, -labelArc / 2, labelArc),
+      new THREE.MeshPhysicalMaterial({ color: '#f5f1e8', roughness: 0.8, thickness: 0.01 }),
     )
-    roller.position.y = 4.05
-    roller.castShadow = true
-    bottleGroup.add(roller)
-
-    const bottleLabel = new THREE.Mesh(new THREE.PlaneGeometry(1.12, 1.75), frontMaterial.clone())
-    bottleLabel.position.set(0, 1.48, 0.666)
+    labelBacking.position.y = 1.43
+    bottleGroup.add(labelBacking)
+    const bottleLabel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.602, 0.602, 1.64, 64, 1, true, -labelArc / 2, labelArc),
+      frontMaterial.clone(),
+    )
+    bottleLabel.position.y = 1.43
     bottleGroup.add(bottleLabel)
-    bottleGroup.position.x = -1.12
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.51, 0.53, 0.92, 64),
+      new THREE.MeshPhysicalMaterial({
+        color: '#101312',
+        roughness: 0.34,
+        clearcoat: 0.35,
+        clearcoatRoughness: 0.3,
+        bumpMap: capRidgeTexture,
+        bumpScale: 0.07,
+      }),
+    )
+    cap.position.y = 3.68
+    cap.castShadow = true
+    bottleGroup.add(cap)
+    const capTop = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.49, 0.51, 0.055, 64),
+      new THREE.MeshPhysicalMaterial({ color: '#090b0a', roughness: 0.58, clearcoat: 0.08 }),
+    )
+    capTop.position.y = 4.165
+    capTop.castShadow = true
+    bottleGroup.add(capTop)
+    bottleGroup.position.set(-1.14, 0.02, -0.45)
     bottleGroup.rotation.y = 0.12
     bottleGroup.visible = bottleVisible
     scene.add(bottleGroup)
 
-    const cap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.7, 0.7, 1.7, 48),
-      new THREE.MeshStandardMaterial({ color: '#171918', roughness: 0.52 }),
-    )
-    cap.position.set(-2.3, 0.86, 0.18)
-    cap.castShadow = true
-    scene.add(cap)
-
-    let generatedTexture
-    if (concept?.image) {
-      new THREE.TextureLoader().load(concept.image, (texture) => {
-        texture.colorSpace = THREE.SRGBColorSpace
-        texture.anisotropy = renderer.capabilities.getMaxAnisotropy()
-        generatedTexture = texture
-        frontMaterial.map = texture
-        frontMaterial.needsUpdate = true
-        bottleLabel.material.map = texture
-        bottleLabel.material.needsUpdate = true
-      })
-    }
-
-    sceneApiRef.current = { camera, controls, boxGroup, bottleGroup, cap }
+    sceneApiRef.current = { camera, controls, boxGroup, bottleGroup }
     let frameId
     const render = () => {
       controls.autoRotate = sceneApiRef.current?.autoRotate ?? autoRotate
@@ -459,8 +517,10 @@ function PackagingPreview3D({ design, concept }) {
       window.cancelAnimationFrame(frameId)
       observer.disconnect()
       controls.dispose()
-      generatedTexture?.dispose()
       artworkTexture.dispose()
+      paperBumpTexture.dispose()
+      capRidgeTexture.dispose()
+      environmentTarget.dispose()
       scene.traverse((object) => {
         if (object.geometry) object.geometry.dispose()
         if (object.material) {
@@ -471,7 +531,7 @@ function PackagingPreview3D({ design, concept }) {
       renderer.dispose()
       sceneApiRef.current = null
     }
-  }, [concept?.id, concept?.image, concept?.palette, design.brandName, design.productName, design.palette])
+  }, [concept?.id, concept?.palette, design.brandName, design.productName, design.palette])
 
   const toggleRotation = () => {
     setAutoRotate((current) => {
@@ -494,7 +554,6 @@ function PackagingPreview3D({ design, concept }) {
       const next = !current
       if (sceneApiRef.current) {
         sceneApiRef.current.bottleGroup.visible = next
-        sceneApiRef.current.cap.visible = next
       }
       return next
     })
@@ -511,7 +570,7 @@ function PackagingPreview3D({ design, concept }) {
 
   return (
     <div className="packaging-viewport" ref={hostRef}>
-      <canvas ref={canvasRef} aria-label="可旋转的眼油纸盒与滚珠瓶三维预览" />
+      <canvas ref={canvasRef} aria-label="可旋转的纸盒与产品瓶结构样机" />
       <div className="viewport-toolbar" role="toolbar" aria-label="三维预览工具">
         <button className={autoRotate ? 'active' : ''} onClick={toggleRotation} title="自动旋转" aria-label="自动旋转"><Rotate3D size={16} /></button>
         <button onClick={zoomIn} title="放大" aria-label="放大"><ZoomIn size={16} /></button>
@@ -520,7 +579,7 @@ function PackagingPreview3D({ design, concept }) {
         <button className={boxVisible ? 'active' : ''} onClick={toggleBox} title="显示或隐藏纸盒" aria-label="显示或隐藏纸盒"><Box size={16} /></button>
         <button className={bottleVisible ? 'active' : ''} onClick={toggleBottle} title="显示或隐藏滚珠瓶" aria-label="显示或隐藏滚珠瓶"><FlaskConical size={16} /></button>
       </div>
-      <div className="viewport-hint"><Rotate3D size={14} />拖动旋转 · 滚轮缩放</div>
+      <div className="viewport-hint"><Rotate3D size={14} />结构样机 · 已同步文字与配色 · 拖动旋转</div>
     </div>
   )
 }
@@ -832,7 +891,7 @@ function PackagingProductView({ design, concept, view }) {
   )
 }
 
-function PackagingArtwork2D({ design, concept, partSettings, activePartId, onSelectPart, maskMode, brushSize, maskResetKey, onMaskChange }) {
+function PackagingArtwork2D({ design, concept, partSettings, parts = packagingParts, profile = getProductProfile('eye-oil'), activePartId, onSelectPart, maskMode, brushSize, maskResetKey, onMaskChange }) {
   const palette = concept.palette || ['#c9685a', '#f4f1e9', '#58725c', '#242826']
   const adjustments = concept.adjustments || {}
   const artworkStyle = {
@@ -844,25 +903,26 @@ function PackagingArtwork2D({ design, concept, partSettings, activePartId, onSel
     '--illustration-opacity': adjustments.overlayOpacity || 1,
     transform: `scale(${design.canvasZoom / 100})`,
   }
-  const source = concept.image || baseMockup
+  const source = concept.image || profile.fallbackImage || ''
   const regionClass = (partId) => `artwork-region ${activePartId === partId ? 'active' : ''} ${partSettings[partId]?.locked ? 'locked' : ''}`
+  const labelFor = (partId) => parts.find((part) => part.id === partId)?.label || partId
 
   return (
     <div className="workbench-stage" style={artworkStyle}>
       <div className={`workbench-artboard ${design.activeTool !== 'select' ? 'masking' : ''}`}>
-        <img src={source} alt={`${concept.name}眼油包装效果图`} draggable="false" />
-        <MaskCanvas active={design.activeTool !== 'select'} mode={maskMode} brushSize={brushSize} resetKey={maskResetKey} onChange={onMaskChange} />
-        {partSettings.illustration?.visible && Object.keys(adjustments).length > 0 && <span className="artwork-edit-wash" aria-hidden="true" />}
-        {partSettings.brand?.visible && <div className="exact-text-layer carton-brand">{design.brandName}</div>}
-        {partSettings.product?.visible && <div className="exact-text-layer carton-product">{design.productName}</div>}
-        {partSettings.brand?.visible && <div className="exact-text-layer bottle-brand">{design.brandName}</div>}
-        {partSettings.product?.visible && <div className="exact-text-layer bottle-product">{design.productName}</div>}
-        {partSettings.carton?.visible && <button className={regionClass('carton')} data-part="carton" onClick={() => onSelectPart('carton')} aria-label="选择纸盒正面"><span>1</span></button>}
-        {partSettings.illustration?.visible && <button className={regionClass('illustration')} data-part="illustration" onClick={() => onSelectPart('illustration')} aria-label="选择植物插画"><span>2</span></button>}
-        {partSettings.brand?.visible && <button className={regionClass('brand')} data-part="brand" onClick={() => onSelectPart('brand')} aria-label="选择品牌文字"><span>3</span></button>}
-        {partSettings.product?.visible && <button className={regionClass('product')} data-part="product" onClick={() => onSelectPart('product')} aria-label="选择产品名称"><span>4</span></button>}
-        {partSettings.bottleLabel?.visible && <button className={regionClass('bottleLabel')} data-part="bottleLabel" onClick={() => onSelectPart('bottleLabel')} aria-label="选择瓶身标签"><span>5</span></button>}
-        {partSettings.cap?.visible && <button className={regionClass('cap')} data-part="cap" onClick={() => onSelectPart('cap')} aria-label="选择瓶盖"><span>6</span></button>}
+        {source ? <img src={source} alt={`${concept.name}${design.productName}包装效果图`} draggable="false" /> : <div className="generic-packaging-artwork"><Box size={44} /><span>{profile.category}</span><strong>{design.brandName}<br />{design.productName}</strong><small>{profile.packagingObject} · 等待生成效果图</small></div>}
+        {source && <MaskCanvas active={design.activeTool !== 'select'} mode={maskMode} brushSize={brushSize} resetKey={maskResetKey} onChange={onMaskChange} />}
+        {source && partSettings.illustration?.visible && Object.keys(adjustments).length > 0 && <span className="artwork-edit-wash" aria-hidden="true" />}
+        {source && partSettings.brand?.visible && <div className="exact-text-layer carton-brand">{design.brandName}</div>}
+        {source && partSettings.product?.visible && <div className="exact-text-layer carton-product">{design.productName}</div>}
+        {source && partSettings.brand?.visible && <div className="exact-text-layer bottle-brand">{design.brandName}</div>}
+        {source && partSettings.product?.visible && <div className="exact-text-layer bottle-product">{design.productName}</div>}
+        {source && partSettings.carton?.visible && <button className={regionClass('carton')} data-part="carton" onClick={() => onSelectPart('carton')} aria-label={`选择${labelFor('carton')}`}><span>1</span></button>}
+        {source && partSettings.illustration?.visible && <button className={regionClass('illustration')} data-part="illustration" onClick={() => onSelectPart('illustration')} aria-label={`选择${labelFor('illustration')}`}><span>2</span></button>}
+        {source && partSettings.brand?.visible && <button className={regionClass('brand')} data-part="brand" onClick={() => onSelectPart('brand')} aria-label={`选择${labelFor('brand')}`}><span>3</span></button>}
+        {source && partSettings.product?.visible && <button className={regionClass('product')} data-part="product" onClick={() => onSelectPart('product')} aria-label={`选择${labelFor('product')}`}><span>4</span></button>}
+        {source && partSettings.bottleLabel?.visible && <button className={regionClass('bottleLabel')} data-part="bottleLabel" onClick={() => onSelectPart('bottleLabel')} aria-label={`选择${labelFor('bottleLabel')}`}><span>5</span></button>}
+        {source && partSettings.cap?.visible && <button className={regionClass('cap')} data-part="cap" onClick={() => onSelectPart('cap')} aria-label={`选择${labelFor('cap')}`}><span>6</span></button>}
       </div>
     </div>
   )
@@ -942,7 +1002,7 @@ function PackagingThreeViews({ design, concept, selectedPackaging }) {
   )
 }
 
-function VersionComparison({ design, current, comparison, position, onPositionChange }) {
+function VersionComparison({ design, current, comparison, position, onPositionChange, fallbackImage = baseMockup }) {
   const renderArtwork = (concept) => {
     const palette = concept.palette || design.palette
     const adjustments = concept.adjustments || {}
@@ -956,7 +1016,7 @@ function VersionComparison({ design, current, comparison, position, onPositionCh
     }
     return (
       <div className="comparison-artwork" style={layerStyle}>
-        <img src={concept.image || baseMockup} alt="" draggable="false" />
+        {concept.image || fallbackImage ? <img src={concept.image || fallbackImage} alt="" draggable="false" /> : <div className="generic-version-artwork"><Box size={34} /><strong>{design.productName}</strong></div>}
         {Object.keys(adjustments).length > 0 && <span className="artwork-edit-wash" aria-hidden="true" />}
         <div className="exact-text-layer carton-brand">{design.brandName}</div>
         <div className="exact-text-layer carton-product">{design.productName}</div>
@@ -980,12 +1040,12 @@ function VersionComparison({ design, current, comparison, position, onPositionCh
   )
 }
 
-function VersionThumbnail({ concept, selected, onSelect }) {
+function VersionThumbnail({ concept, selected, onSelect, fallbackImage = baseMockup, productName = '产品' }) {
   const palette = concept.palette || ['#c9685a', '#f4f1e9', '#58725c', '#242826']
   return (
     <button className={`version-thumbnail ${selected ? 'selected' : ''}`} onClick={onSelect} aria-label={`切换到${concept.name}`}>
       <div className="version-image" style={{ '--version-accent': palette[0], '--version-paper': palette[1] }}>
-        <img src={concept.image || baseMockup} alt="" />
+        {concept.image || fallbackImage ? <img src={concept.image || fallbackImage} alt="" /> : <div className="generic-version-artwork"><Box size={24} /><span>{productName}</span></div>}
         {selected && <span className="version-selected"><Check size={12} /></span>}
       </div>
       <strong>{concept.name}</strong>
@@ -1005,14 +1065,17 @@ function LegacyPackagingStudio({ state, updateState, confirmStage, notify, openA
     : allConcepts.find((item) => item.id === design.selectedConceptId) || allConcepts[0]
   const selectedPackaging = packagingOptions.find((item) => item.id === state.selectedPackaging) || packagingOptions[0]
 
-  const updateDesign = (patch, preserveConfirmation = false) => updateState({
-    packagingDesign: {
-      ...design,
-      ...(preserveConfirmation ? {} : { confirmed2D: false, confirmedConceptId: '', gateConfirmedAt: '', show3D: false, viewMode: '2d' }),
-      ...patch,
-    },
-    ...(preserveConfirmation ? {} : { completed: state.completed.filter((index) => index !== 5) }),
-  })
+  const updateDesign = (patch, preserveConfirmation = false) => {
+    if (!preserveConfirmation) setEditorMode('edit')
+    return updateState({
+      packagingDesign: {
+        ...design,
+        ...(preserveConfirmation ? {} : { confirmed2D: false, confirmedConceptId: '', show3D: false, viewMode: '2d' }),
+        ...patch,
+      },
+      ...(preserveConfirmation ? {} : { completed: state.completed.filter((index) => index !== 5) }),
+    })
+  }
   const updatePalette = (index, value) => {
     const palette = [...design.palette]
     palette[index] = value
@@ -1028,11 +1091,14 @@ function LegacyPackagingStudio({ state, updateState, confirmStage, notify, openA
     updateDesign({ selectedConceptId: concept.id, style: concept.direction, palette: concept.palette || design.palette })
   }
 
-  const changePackaging = (packagingId) => updateState({
-    selectedPackaging: packagingId,
-    packagingDesign: { ...design, confirmed2D: false, confirmedConceptId: '', show3D: false, viewMode: '2d' },
-    completed: state.completed.filter((index) => index !== 5),
-  })
+  const changePackaging = (packagingId) => {
+    setEditorMode('edit')
+    return updateState({
+      selectedPackaging: packagingId,
+      packagingDesign: { ...design, confirmed2D: false, confirmedConceptId: '', show3D: false, viewMode: '2d' },
+      completed: state.completed.filter((index) => index !== 5),
+    })
+  }
 
   const generateConcepts = async () => {
     setGenerating(true)
@@ -1042,6 +1108,11 @@ function LegacyPackagingStudio({ state, updateState, confirmStage, notify, openA
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          templateId: state.templateId,
+          category: profile.category,
+          productType: profile.productType,
+          productForm: state.project?.form || profile.productType,
+          imageComposition: profile.imageComposition,
           brandName: design.brandName,
           productName: design.productName,
           structure: selectedPackaging.name,
@@ -1094,7 +1165,7 @@ function LegacyPackagingStudio({ state, updateState, confirmStage, notify, openA
 
   return (
     <>
-      <StageHeading title="包装设计" description="先生成并确认2D包装视觉；确认后，再按需要建立3D纸盒与瓶器样机。" />
+      <StageHeading title="包装设计" />
       <div className="packaging-workflow" aria-label="包装设计流程">
         <div className="done"><span>1</span><strong>选择2D方案</strong></div>
         <i />
@@ -1121,7 +1192,7 @@ function LegacyPackagingStudio({ state, updateState, confirmStage, notify, openA
             </Field>
             <Button className="full-width packaging-generate" icon={Sparkles} onClick={generateConcepts} disabled={generating}>{generating ? '正在生成3套方案…' : 'AI生成3套方案'}</Button>
             <div className={`generation-state ${generationError ? 'error' : ''}`}>
-              {generating ? <><span className="generation-spinner" /><span>正在绘制包装正面稿，预计需要1-2分钟</span></> : generationError ? <><CircleStatus /><span>{generationError}</span><button onClick={openAiSettings}>打开AI设置</button></> : <><span className="ready-dot" /><span>先确认2D视觉，再按需要建立3D样机</span></>}
+              {generating ? <><span className="generation-spinner" /><span>正在绘制包装正面稿，预计需要1-2分钟</span></> : generationError ? <><CircleStatus /><span>{generationError}</span><button onClick={openAiSettings}>打开AI设置</button></> : <><span className="ready-dot" /><span>{profile.supportsStructural3D ? '先确认2D视觉，再按需要建立3D样机' : '先生成并确认2D包装效果图'}</span></>}
             </div>
           </div>
         </section>
@@ -1162,11 +1233,25 @@ function LegacyPackagingStudio({ state, updateState, confirmStage, notify, openA
 
 export function PackagingStudio({ state, updateState, notify, openAiSettings }) {
   const design = { ...defaultPackagingDesign, ...(state.packagingDesign || {}) }
-  const partSettings = normalizePartSettings(design.partSettings)
+  const profile = getProductProfile(state.templateId)
+  const briefConstraints = profile.briefConstraints || {
+    structureLabel: '产品与零售包装',
+    conditionLabel: '本轮重点约束',
+    conditionOptions: [],
+    finishLabel: '材质与信息表现',
+    finishOptions,
+    referenceHint: '可上传产品、包装结构或视觉参考。',
+  }
+  const packagingParts = useMemo(() => getPackagingParts(state.templateId), [state.templateId])
+  const starterConcepts = useMemo(() => createStarterConcepts(state.templateId, design), [state.templateId, design.style, design.palette])
+  const partSettings = normalizePartSettings(design.partSettings, packagingParts)
   const [generating, setGenerating] = useState(false)
   const [refining, setRefining] = useState(false)
   const [generating3D, setGenerating3D] = useState(false)
   const [generationError, setGenerationError] = useState('')
+  const [briefAssisting, setBriefAssisting] = useState(false)
+  const [briefAssist, setBriefAssist] = useState(null)
+  const [briefError, setBriefError] = useState('')
   const [editError, setEditError] = useState('')
   const [maskDataUrl, setMaskDataUrl] = useState('')
   const [maskMode, setMaskMode] = useState('paint')
@@ -1175,25 +1260,48 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
   const [compareMode, setCompareMode] = useState(false)
   const [compareConceptId, setCompareConceptId] = useState('')
   const [comparePosition, setComparePosition] = useState(50)
+  const [editorMode, setEditorMode] = useState(() => ['views', '3d'].includes(design.viewMode) ? 'structure' : 'edit')
   const uploadRef = useRef(null)
-  const allConcepts = useMemo(() => [...starterConcepts, ...(design.generatedConcepts || [])], [design.generatedConcepts])
+  const allConcepts = useMemo(() => [...starterConcepts, ...(design.generatedConcepts || [])], [starterConcepts, design.generatedConcepts])
   const activeConcept = allConcepts.find((item) => item.id === design.selectedConceptId) || allConcepts[0]
   const fallbackCompareConcept = allConcepts.find((item) => item.id === activeConcept.parentId && item.id !== activeConcept.id)
     || allConcepts.find((item) => item.id !== activeConcept.id)
   const compareConcept = allConcepts.find((item) => item.id === compareConceptId && item.id !== activeConcept.id)
     || fallbackCompareConcept
   const activePart = packagingParts.find((part) => part.id === design.activePartId) || packagingParts[1]
-  const selectedPackaging = packagingOptions.find((item) => item.id === state.selectedPackaging) || packagingOptions[0]
-  const show3D = Boolean(design.confirmed2D && design.show3D)
-  const viewMode = design.viewMode === 'views' ? 'views' : show3D && design.viewMode === '3d' ? '3d' : '2d'
+  const selectedPackaging = state.templateId === 'eye-oil'
+    ? packagingOptions.find((item) => item.id === state.selectedPackaging) || packagingOptions[0]
+    : {
+        id: 'project-structure',
+        name: state.project?.structure || state.project?.form || profile.packagingObject,
+        bottle: state.project?.form || profile.productType,
+        applicator: state.project?.structure || profile.packagingObject,
+        carton: design.finishes.join(' + ') || '材质与印刷待打样确认',
+        risk: '结构、材料与运输条件待打样验证',
+      }
+  const marketOpportunity = getMarketOpportunity(state.selectedOpportunityId, state.opportunityWorkspace?.customOpportunities || [])
+  const selectedDirection = getProductDirection(marketOpportunity, state.selectedDirectionId)
+  const confirmedDirection = selectedDirection?.buildable && selectedDirection?.project ? selectedDirection : null
+  const designBasis = {
+    opportunity: marketOpportunity?.title || '待补充市场机会',
+    opportunitySignal: marketOpportunity?.summary || marketOpportunity?.signal || marketOpportunity?.evidence || '',
+    direction: confirmedDirection?.name || state.project?.name || profile.productType,
+    directionPremise: confirmedDirection?.premise || `当前开发形态：${state.project?.form || profile.productType}；${state.project?.structure || profile.packagingObject}。`,
+  }
+  const designAudience = state.assumptions?.user || '前置人群定位待确认'
+  const show3D = Boolean(profile.supportsStructural3D && design.confirmed2D && design.show3D)
+  const viewMode = profile.supportsStructural3D && design.viewMode === 'views' ? 'views' : show3D && design.viewMode === '3d' ? '3d' : '2d'
+  const artworkSource = activeConcept.image || profile.fallbackImage || ''
+  const specValues = state.templateId === 'eye-oil'
+    ? [selectedPackaging.bottle, selectedPackaging.applicator, design.finishes.join(' + ') || selectedPackaging.carton]
+    : [state.project?.form || profile.productType, state.project?.structure || profile.packagingObject, design.finishes.join(' + ') || '材质与印刷待打样确认']
+  const selectedConstraints = Array.isArray(design.supportingConstraints) ? design.supportingConstraints : []
+  const availableFinishes = briefConstraints.finishOptions?.length ? briefConstraints.finishOptions : finishOptions
 
   useEffect(() => {
     setMaskDataUrl('')
     setMaskResetKey((value) => value + 1)
   }, [activeConcept.id, activePart.id])
-  const gateChecks = Array.isArray(design.gateChecks) ? design.gateChecks : []
-  const gateReady = packagingGateItems.every((item) => gateChecks.includes(item.id))
-
   const updateDesign = (patch, preserveConfirmation = false) => updateState({
     packagingDesign: {
       ...design,
@@ -1216,7 +1324,7 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
 
   const changePackaging = (packagingId) => updateState({
     selectedPackaging: packagingId,
-    packagingDesign: { ...design, gateChecks: [], confirmed2D: false, confirmedConceptId: '', gateConfirmedAt: '', show3D: false, viewMode: '2d' },
+    packagingDesign: { ...design, confirmed2D: false, confirmedConceptId: '', show3D: false, viewMode: '2d' },
     completed: state.completed.filter((index) => index !== 5),
   })
 
@@ -1234,7 +1342,7 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
       ...partSettings,
       [partId]: { ...partSettings[partId], visible: !partSettings[partId].visible },
     },
-  })
+}, true)
 
   const changeZoom = (delta) => updateDesign({ canvasZoom: Math.min(130, Math.max(70, design.canvasZoom + delta)) }, true)
 
@@ -1270,12 +1378,6 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
     startComparison()
   }
 
-  const toggleGateCheck = (itemId) => updateDesign({
-    gateChecks: gateChecks.includes(itemId)
-      ? gateChecks.filter((id) => id !== itemId)
-      : [...gateChecks, itemId],
-  })
-
   const handleReferenceUpload = async (event) => {
     const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith('image/')).slice(0, 3 - design.referenceImages.length)
     if (!files.length) return
@@ -1294,6 +1396,56 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
     referenceImages: design.referenceImages.filter((item) => item.id !== referenceId),
   }, true)
 
+  const toggleSupportingConstraint = (constraint) => updateDesign({
+    supportingConstraints: selectedConstraints.includes(constraint)
+      ? selectedConstraints.filter((item) => item !== constraint)
+      : [...selectedConstraints, constraint],
+  })
+
+  const improveBrief = async () => {
+    const userRequest = design.description.trim()
+    if (!userRequest || briefAssisting) return
+    setBriefAssisting(true)
+    setBriefError('')
+    setBriefAssist(null)
+    try {
+      const response = await fetch('/api/ai/packaging-brief', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request: userRequest,
+          project: {
+            category: profile.category,
+            productType: profile.productType,
+            brandName: design.brandName,
+            productName: design.productName,
+            structure: selectedPackaging.name,
+            style: design.style,
+            finishes: design.finishes,
+            supportingConstraints: selectedConstraints,
+            marketOpportunity: designBasis.opportunity,
+            productDirection: designBasis.direction,
+            directionPremise: designBasis.directionPremise,
+          },
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.message || '包装AI暂时无法整理需求，请稍后重试。')
+      setBriefAssist(payload.brief)
+    } catch (error) {
+      setBriefError(error.message)
+    } finally {
+      setBriefAssisting(false)
+    }
+  }
+
+  const applyBriefAssist = () => {
+    if (!briefAssist?.imagePrompt) return
+    updateDesign({ description: briefAssist.imagePrompt })
+    setBriefAssist(null)
+    notify('已将包装AI整理后的需求应用到本次生成')
+  }
+
   const generateConcepts = async () => {
     setGenerating(true)
     setGenerationError('')
@@ -1304,10 +1456,16 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
         body: JSON.stringify({
           brandName: design.brandName,
           productName: design.productName,
+          category: profile.category,
+          productType: profile.productType,
+          productForm: state.project?.form || profile.productType,
+          imageComposition: `完整展示${profile.packagingObject}，结构清楚、比例可信`,
           structure: selectedPackaging.name,
           style: design.style,
           palette: design.palette,
           finishes: design.finishes,
+          constraints: selectedConstraints,
+          marketContext: designBasis,
           description: design.description,
           audience: state.assumptions.user,
           price: state.assumptions.price,
@@ -1357,6 +1515,10 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
 
   const refinePart = async () => {
     if (!design.localEditPrompt.trim() || activePart.kind === 'text' || partSettings[activePart.id]?.locked || refining) return
+    if (!artworkSource) {
+      setEditError('请先生成一套当前产品的AI效果图，再进行局部修改。')
+      return
+    }
     setRefining(true)
     setEditError('')
     try {
@@ -1370,7 +1532,10 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sourceImage: activeConcept.image || baseMockup,
+          sourceImage: artworkSource,
+          templateId: state.templateId,
+          category: profile.category,
+          productType: profile.productType,
           partId: activePart.id,
           partLabel: activePart.label,
           instruction: design.localEditPrompt,
@@ -1429,49 +1594,111 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
   }
 
   const confirm2D = () => {
-    if (!gateReady) {
-      notify('请先完成打样前验收检查')
+    if (!artworkSource) {
+      notify('请先生成当前产品的2D效果图')
       return
     }
-    updateDesign({ confirmed2D: true, confirmedConceptId: activeConcept.id, gateConfirmedAt: new Date().toISOString(), viewMode: '2d' }, true)
+    updateDesign({ confirmed2D: true, confirmedConceptId: activeConcept.id, viewMode: '2d' }, true)
     notify(`已确认2D包装方案：${activeConcept.name}`)
   }
 
   const generate3D = () => {
-    if (!design.confirmed2D || generating3D) return
+    if (!profile.supportsStructural3D || !design.confirmed2D || generating3D) return
     setCompareMode(false)
     setGenerating3D(true)
     window.setTimeout(() => {
       updateDesign({ show3D: true, viewMode: '3d' }, true)
       setGenerating3D(false)
-      notify('已根据确认的2D方案建立3D包装样机')
+      notify('已根据确认的2D方案建立3D结构预览')
     }, 650)
+  }
+
+  const enterEditMode = () => {
+    setCompareMode(false)
+    setEditorMode('edit')
+    updateDesign({ viewMode: '2d', activeTool: 'select' }, true)
+  }
+
+  const enterStructureMode = (mode = show3D && viewMode === '3d' ? '3d' : 'views') => {
+    if (!design.confirmed2D) {
+      notify('请先确认当前2D效果，再进入结构检查')
+      return
+    }
+    setCompareMode(false)
+    setEditorMode('structure')
+    updateDesign({ viewMode: mode }, true)
   }
 
   return (
     <>
       <div className="packaging-stage-heading">
-        <StageHeading title="包装设计" description="AI先生成完整效果图，再按部位精细修改；文字保持为可控图层，确认2D后可按需生成3D。" />
-        <div className="packaging-stage-actions">
-          <Button variant="secondary" icon={Layers3} onClick={() => { setCompareMode(false); updateDesign({ viewMode: viewMode === 'views' ? '2d' : 'views' }, true) }}>{viewMode === 'views' ? '返回2D编辑' : '查看成品三视图'}</Button>
-          {show3D && <Button variant="secondary" icon={viewMode === '3d' ? ImageIcon : Box} onClick={() => { setCompareMode(false); updateDesign({ viewMode: viewMode === '3d' ? '2d' : '3d' }, true) }}>{viewMode === '3d' ? '返回2D编辑' : '查看3D样机'}</Button>}
-          {!design.confirmed2D && <Button icon={Check} onClick={confirm2D} disabled={!gateReady}>确认2D效果</Button>}
-          {design.confirmed2D && !show3D && <Button icon={Box} onClick={generate3D} disabled={generating3D}>{generating3D ? '正在建立3D…' : '生成3D样机'}</Button>}
-          {design.confirmed2D && <span className="two-d-confirmed"><Check size={13} />2D已确认</span>}
+        <StageHeading title="包装设计" />
+        <div className="packaging-stage-controls">
+          <div className="design-mode-switch" role="tablist" aria-label="包装设计工作模式">
+            <button className={editorMode === 'edit' ? 'active' : ''} onClick={enterEditMode} role="tab" aria-selected={editorMode === 'edit'}><ImageIcon size={14} />2D创作</button>
+            <button className={editorMode === 'structure' ? 'active' : ''} onClick={() => enterStructureMode()} disabled={!design.confirmed2D} role="tab" aria-selected={editorMode === 'structure'} title={!design.confirmed2D ? '确认2D后开放结构检查' : '查看成品三视图和3D结构'}><Layers3 size={14} />结构检查</button>
+          </div>
+          <div className="packaging-stage-actions">
+            {editorMode === 'edit' && !design.confirmed2D && <Button icon={Check} onClick={confirm2D} disabled={!artworkSource}>确认2D效果</Button>}
+            {editorMode === 'edit' && design.confirmed2D && <span className="two-d-confirmed"><Check size={13} />2D已确认</span>}
+            {editorMode === 'structure' && <div className="structure-mode-switch" role="tablist" aria-label="结构检查视图">
+              <button className={viewMode === 'views' ? 'active' : ''} onClick={() => enterStructureMode('views')} role="tab" aria-selected={viewMode === 'views'}><Layers3 size={13} />成品三视图</button>
+              <button className={viewMode === '3d' ? 'active' : ''} onClick={() => show3D ? enterStructureMode('3d') : generate3D()} disabled={!show3D && generating3D} role="tab" aria-selected={viewMode === '3d'}><Box size={13} />3D结构</button>
+            </div>}
+            {editorMode === 'structure' && !show3D && <Button icon={Box} onClick={generate3D} disabled={generating3D}>{generating3D ? '正在建立3D…' : '生成3D结构预览'}</Button>}
+            {editorMode === 'structure' && <Button variant="secondary" icon={ImageIcon} onClick={enterEditMode}>返回2D创作</Button>}
+          </div>
         </div>
       </div>
 
       <div className="packaging-workbench">
         <section className="workbench-brief" aria-label="包装生成需求">
-          <div className="workbench-panel-title"><div><strong>生成需求</strong><span>描述方向并上传参考素材</span></div><Sparkles size={17} /></div>
+          <div className="workbench-panel-title"><div><span>包装创作 Brief</span><strong>从想法到效果图</strong></div><Sparkles size={17} /></div>
           <div className="workbench-brief-body">
-            <div className="compact-field-grid">
-              <Field label="品牌名称"><input maxLength={20} value={design.brandName} onChange={(event) => updateDesign({ brandName: event.target.value })} /></Field>
-              <Field label="产品名称"><input maxLength={24} value={design.productName} onChange={(event) => updateDesign({ productName: event.target.value })} /></Field>
-            </div>
-            <Field label="设计需求" hint={`${design.description.length}/240`}>
-              <textarea className="brief-textarea" maxLength={240} value={design.description} onChange={(event) => updateDesign({ description: event.target.value })} />
-            </Field>
+            <section className="brief-lineage" aria-label="当前包装设计依据">
+              <div><span>设计依据</span><strong>继承前置市场与产品方向</strong></div>
+              <dl>
+                <div><dt>市场机会</dt><dd>{designBasis.opportunity}</dd></div>
+                <div><dt>已确认方向</dt><dd>{designBasis.direction}</dd></div>
+              </dl>
+              {designBasis.directionPremise && <p>{designBasis.directionPremise}</p>}
+            </section>
+            <section className="brief-task-summary" aria-label="当前设计任务">
+              <div className="brief-task-summary-head"><strong>当前设计任务</strong><span>来自前置市场机会</span></div>
+              <ul>
+                <li><span>为谁做</span><strong>{designAudience}</strong></li>
+                <li><span>要回答</span><strong>{designBasis.directionPremise || '把方向转成可识别的包装方案'}</strong></li>
+                <li><span>交付重点</span><strong>先锁定完整效果图，再细修部位与结构</strong></li>
+              </ul>
+            </section>
+            <section className="brief-core">
+              <div className="brief-section-label"><span>01</span><strong>定义本次设计任务</strong></div>
+              <div className="compact-field-grid">
+                <Field label="品牌名称"><input maxLength={20} value={design.brandName} onChange={(event) => updateDesign({ brandName: event.target.value })} /></Field>
+                <Field label="产品名称"><input maxLength={24} value={design.productName} onChange={(event) => updateDesign({ productName: event.target.value })} /></Field>
+              </div>
+              <Field label="用自然语言告诉包装AI" hint={`${design.description.length}/1200`}>
+                <textarea className="brief-textarea" maxLength={1200} value={design.description} onChange={(event) => { updateDesign({ description: event.target.value }); setBriefAssist(null); setBriefError('') }} placeholder="例如：不要像传统眼油。做成一支放在办公桌上也像高级文具的产品，留白多、主视觉克制，纸盒和瓶身要有一个能记住的细节；避免植物插画和廉价的功效感。" />
+              </Field>
+              <div className="brief-ai-actions">
+                <Button variant="secondary" icon={Sparkles} onClick={improveBrief} disabled={!design.description.trim() || briefAssisting || generating}>{briefAssisting ? '包装AI正在整理…' : '请包装AI整理需求'}</Button>
+                <small>先由AI整理，再由你决定是否采纳为本次生图指令。</small>
+              </div>
+            </section>
+
+            {briefError && <div className="brief-ai-error"><CircleStatus /><span>{briefError}</span></div>}
+
+            {briefAssist && <section className="brief-ai-result" aria-label="包装AI需求建议">
+              <div className="brief-ai-result-head"><div><span>包装AI建议</span><strong>{briefAssist.summary}</strong></div><span>待你采纳</span></div>
+              <div className="brief-ai-prompt"><span>建议生成指令</span><p>{briefAssist.imagePrompt}</p></div>
+              {briefAssist.mustKeep?.length > 0 && <div className="brief-ai-list"><span>必须保留</span><p>{briefAssist.mustKeep.join('；')}</p></div>}
+              {briefAssist.questions?.length > 0 && <div className="brief-ai-list questions"><span>待确认</span><p>{briefAssist.questions.join('；')}</p></div>}
+              {briefAssist.risks?.length > 0 && <div className="brief-ai-list risks"><span>设计边界</span><p>{briefAssist.risks.join('；')}</p></div>}
+              <Button variant="secondary" className="full-width" onClick={applyBriefAssist}>采纳为本次生成需求</Button>
+            </section>}
+
+            <details className="brief-constraints">
+              <summary><span>02</span>辅助约束 <small>结构、参考图、风格与工艺</small></summary>
 
             <div className="reference-field">
               <div className="reference-field-head"><strong>参考图片</strong><span>{design.referenceImages.length}/3</span></div>
@@ -1485,25 +1712,37 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
                 {design.referenceImages.length < 3 && <button className="reference-upload" onClick={() => uploadRef.current?.click()}><ImagePlus size={18} /><span>上传图片</span></button>}
               </div>
               <input ref={uploadRef} className="visually-hidden" type="file" accept="image/*" multiple onChange={handleReferenceUpload} />
-              <small>支持JPG、PNG，自动压缩用于AI参考</small>
+              <small>{briefConstraints.referenceHint}</small>
             </div>
 
-            <label className="studio-select"><span>包装结构</span><select value={state.selectedPackaging} onChange={(event) => changePackaging(event.target.value)}>{packagingOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label className="studio-select"><span>设计风格</span><select value={design.style} onChange={(event) => updateDesign({ style: event.target.value })}><option>自然植萃 · 现代简约</option><option>草本清新 · 植物插画</option><option>高端质感 · 简约线条</option><option>专业功效 · 实验室感</option></select></label>
+            {state.templateId === 'eye-oil'
+              ? <label className="studio-select"><span>{briefConstraints.structureLabel}</span><select value={state.selectedPackaging} onChange={(event) => changePackaging(event.target.value)}>{packagingOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              : <div className="studio-readonly-field"><span>{briefConstraints.structureLabel}</span><strong>{selectedPackaging.name}</strong></div>}
+            <label className="studio-select"><span>设计风格</span><select value={design.style} onChange={(event) => updateDesign({ style: event.target.value })}>{profile.styles.map((style) => <option key={style}>{style}</option>)}</select></label>
             <fieldset className="palette-field"><legend>配色倾向</legend><div>{design.palette.map((color, index) => <label key={`${color}-${index}`} title={`颜色 ${index + 1}`}><input type="color" value={color} onChange={(event) => updatePalette(index, event.target.value)} /><span style={{ background: color }} /></label>)}</div></fieldset>
-            <fieldset className="finish-field"><legend>工艺与材质</legend><div>{finishOptions.map((finish) => <label key={finish}><input type="checkbox" checked={design.finishes.includes(finish)} onChange={() => updateDesign({ finishes: design.finishes.includes(finish) ? design.finishes.filter((item) => item !== finish) : [...design.finishes, finish] })} /><span className="finish-check">{design.finishes.includes(finish) ? <Check size={12} /> : null}</span>{finish}</label>)}</div></fieldset>
-            <Button className="full-width workbench-generate" icon={Sparkles} onClick={generateConcepts} disabled={generating}>{generating ? '正在生成效果图…' : '生成新方案'}</Button>
-            <div className={`generation-state ${generationError ? 'error' : ''}`}>
-              {generating ? <><span className="generation-spinner" /><span>正在生成纸盒与瓶器效果图</span></> : generationError ? <><CircleStatus /><span>{generationError}</span><button onClick={openAiSettings}>打开AI设置</button></> : <><span className="ready-dot" /><span>先生成整体，再从右侧选择部位修改</span></>}
+            <fieldset className="finish-field"><legend>{briefConstraints.conditionLabel}</legend><div>{briefConstraints.conditionOptions.map((constraint) => <label key={constraint}><input type="checkbox" checked={selectedConstraints.includes(constraint)} onChange={() => toggleSupportingConstraint(constraint)} /><span className="finish-check">{selectedConstraints.includes(constraint) ? <Check size={12} /> : null}</span>{constraint}</label>)}</div></fieldset>
+            <fieldset className="finish-field"><legend>{briefConstraints.finishLabel}</legend><div>{availableFinishes.map((finish) => <label key={finish}><input type="checkbox" checked={design.finishes.includes(finish)} onChange={() => updateDesign({ finishes: design.finishes.includes(finish) ? design.finishes.filter((item) => item !== finish) : [...design.finishes, finish] })} /><span className="finish-check">{design.finishes.includes(finish) ? <Check size={12} /> : null}</span>{finish}</label>)}</div></fieldset>
+            </details>
+            <div className="brief-generate-area">
+              <div className="brief-section-label"><span>03</span><strong>开始生成</strong></div>
+              <Button className="full-width workbench-generate" icon={Sparkles} onClick={generateConcepts} disabled={generating}>{generating ? '正在生成效果图…' : '生成新方案'}</Button>
+              <div className={`generation-state ${generationError ? 'error' : ''}`}>
+                {generating ? <><span className="generation-spinner" /><span>正在生成{profile.packagingObject}效果图</span></> : generationError ? <><CircleStatus /><span>{generationError}</span><button onClick={openAiSettings}>打开AI设置</button></> : <><span className="ready-dot" /><span>{profile.supportsStructural3D ? '先生成整体，再细修部位；修改后重新确认2D，最后检查结构' : '先生成整体，再从右侧选择部位修改'}</span></>}
+              </div>
             </div>
           </div>
         </section>
 
         <section className="workbench-center" aria-label="包装效果图编辑画布">
-          <div className="canvas-toolbar" role="toolbar" aria-label="画布工具">
+          <div className="canvas-toolbar" role="toolbar" aria-label={editorMode === 'structure' ? '结构检查工具' : '画布工具'}>
+            {editorMode === 'structure' ? <>
+              <div className="structure-toolbar-copy"><Layers3 size={16} /><div><strong>{viewMode === '3d' ? '3D结构检查' : '成品三视图检查'}</strong><span>基于已确认的2D方案查看结构，不会修改当前设计。</span></div></div>
+              <div className="toolbar-spacer" />
+              <span className="structure-toolbar-state"><Check size={13} />2D已确认</span>
+            </> : <>
             <button className={`canvas-tool-button ${design.activeTool === 'select' ? 'active' : ''}`} onClick={() => selectCanvasTool('select')} title="选择部位" aria-label="选择"><MousePointer2 size={15} /><span>选择</span></button>
-            <button className={`canvas-tool-button ${design.activeTool === 'mask' ? 'active' : ''}`} onClick={() => selectCanvasTool('mask')} title="绘制局部选区" aria-label="画笔"><Paintbrush size={15} /><span>画笔</span></button>
-            <button className={`canvas-tool-button ${design.activeTool === 'erase' ? 'active' : ''}`} onClick={() => selectCanvasTool('erase')} title="擦除选区" aria-label="擦除"><Eraser size={15} /><span>擦除</span></button>
+            <button className={`canvas-tool-button ${design.activeTool === 'mask' ? 'active' : ''}`} onClick={() => selectCanvasTool('mask')} title="绘制局部选区" aria-label="画笔" disabled={!artworkSource}><Paintbrush size={15} /><span>画笔</span></button>
+            <button className={`canvas-tool-button ${design.activeTool === 'erase' ? 'active' : ''}`} onClick={() => selectCanvasTool('erase')} title="擦除选区" aria-label="擦除" disabled={!artworkSource}><Eraser size={15} /><span>擦除</span></button>
             <button className={`canvas-tool-button ${compareMode ? 'active' : ''}`} onClick={toggleComparison} title="对比两个设计版本" aria-label="版本对比"><Columns2 size={15} /><span>对比</span></button>
             <span className="toolbar-divider" />
             <div className="canvas-selection"><Layers3 size={14} /><span>{compareMode && compareConcept ? `${activeConcept.name} vs ${compareConcept.name}` : activePart.label}</span>{!compareMode && partSettings[activePart.id]?.locked && <Lock size={12} />}</div>
@@ -1513,6 +1752,7 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
             <span className="zoom-value">{design.canvasZoom}%</span>
             <button onClick={() => changeZoom(10)} title="放大" aria-label="放大"><ZoomIn size={16} /></button>
             <button onClick={() => updateDesign({ canvasZoom: 100 }, true)} title="重置缩放" aria-label="重置缩放"><Maximize2 size={16} /></button>
+            </>}
           </div>
 
           <div className="canvas-main">
@@ -1521,14 +1761,14 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
               : viewMode === 'views'
                 ? <PackagingThreeViews design={design} concept={activeConcept} selectedPackaging={selectedPackaging} />
                 : compareMode && compareConcept
-                  ? <VersionComparison design={design} current={activeConcept} comparison={compareConcept} position={comparePosition} onPositionChange={setComparePosition} />
-                  : <PackagingArtwork2D design={design} concept={activeConcept} partSettings={partSettings} activePartId={activePart.id} onSelectPart={setActivePart} maskMode={maskMode} brushSize={brushSize} maskResetKey={maskResetKey} onMaskChange={setMaskDataUrl} />}
+                  ? <VersionComparison design={design} current={activeConcept} comparison={compareConcept} position={comparePosition} onPositionChange={setComparePosition} fallbackImage={profile.fallbackImage || ''} />
+                  : <PackagingArtwork2D design={design} concept={activeConcept} partSettings={partSettings} parts={packagingParts} profile={profile} activePartId={activePart.id} onSelectPart={setActivePart} maskMode={maskMode} brushSize={brushSize} maskResetKey={maskResetKey} onMaskChange={setMaskDataUrl} />}
           </div>
 
           <div className="version-filmstrip">
-            <div className="version-filmstrip-head"><div><strong>设计版本</strong><span>{compareMode && compareConcept ? `${activeConcept.name} vs ${compareConcept.name}` : `${allConcepts.length}个版本`}</span></div><button onClick={() => duplicateVersion(activeConcept)}><Copy size={13} />复制当前版本</button></div>
+            <div className="version-filmstrip-head"><div><strong>版本管理</strong><span>{compareMode && compareConcept ? `${activeConcept.name} vs ${compareConcept.name}` : `当前：${activeConcept.name} · ${allConcepts.length}个版本`}</span></div><button onClick={() => duplicateVersion(activeConcept)}><Copy size={13} />保存为新版本</button></div>
             <div className="version-filmstrip-list">
-              {allConcepts.map((concept) => <VersionThumbnail key={concept.id} concept={concept} selected={concept.id === activeConcept.id} onSelect={() => selectConcept(concept)} />)}
+              {allConcepts.map((concept) => <VersionThumbnail key={concept.id} concept={concept} selected={concept.id === activeConcept.id} onSelect={() => selectConcept(concept)} fallbackImage={profile.fallbackImage || ''} productName={design.productName} />)}
             </div>
           </div>
         </section>
@@ -1541,12 +1781,12 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
 
           {design.editorTab === 'parts' ? (
             <>
-              <div className="layer-section-head"><strong>图层 / 设计部位</strong><span>点击画布也可选择</span></div>
+              <div className="layer-section-head"><strong>设计部位</strong><span>AI图为合成图，眼睛仅控制辅助层</span></div>
               <div className="part-list">
                 {packagingParts.map((part) => (
                   <div className={`part-row ${activePart.id === part.id ? 'active' : ''}`} key={part.id}>
                     <button className="part-main" onClick={() => setActivePart(part.id)}><GripVertical size={14} /><span className="part-number">{part.number}</span><strong>{part.label}</strong></button>
-                    <button onClick={() => togglePartVisibility(part.id)} title={partSettings[part.id].visible ? '隐藏' : '显示'} aria-label={`${partSettings[part.id].visible ? '隐藏' : '显示'}${part.label}`}>{partSettings[part.id].visible ? <Eye size={15} /> : <EyeOff size={15} />}</button>
+                    <button onClick={() => togglePartVisibility(part.id)} title={getPartVisibilityLabel(part, partSettings[part.id].visible)} aria-label={`${getPartVisibilityLabel(part, partSettings[part.id].visible)}${part.label}`} aria-pressed={partSettings[part.id].visible}>{partSettings[part.id].visible ? <Eye size={15} /> : <EyeOff size={15} />}</button>
                     <button onClick={() => togglePartLock(part.id)} title={partSettings[part.id].locked ? '解锁' : '锁定'} aria-label={`${partSettings[part.id].locked ? '解锁' : '锁定'}${part.label}`}>{partSettings[part.id].locked ? <Lock size={14} /> : <Unlock size={14} />}</button>
                   </div>
                 ))}
@@ -1563,34 +1803,17 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
                   </>
                 ) : (
                   <>
-                    <div className="local-edit-title"><div><strong>AI局部修改</strong><span>只修改当前选中的“{activePart.label}”</span></div><span className="part-number">{activePart.number}</span></div>
+                    <div className="local-edit-title"><div><strong>AI局部修改</strong><span>只修改当前选中的“{activePart.label}”，通过局部重绘改变原图</span></div><span className="part-number">{activePart.number}</span></div>
                     <div className={`mask-status ${maskDataUrl ? 'ready' : ''}`}><Paintbrush size={13} /><span>{maskDataUrl ? '已绘制精确选区，AI只重绘透明蒙版区域' : '可直接按部位修改，也可用画笔圈出精确选区'}</span></div>
+                    {partSettings[activePart.id]?.locked && <div className="local-edit-unlock"><Lock size={13} /><span>当前部位已锁定，避免局部修改时被AI带偏。</span><button onClick={() => togglePartLock(activePart.id)}><Unlock size={12} />解锁后修改</button></div>}
                     <textarea maxLength={200} value={design.localEditPrompt} onChange={(event) => updateDesign({ localEditPrompt: event.target.value }, true)} disabled={partSettings[activePart.id]?.locked} />
                     <div className="local-edit-meta"><span>{design.localEditPrompt.length}/200</span><span>{packagingParts.filter((part) => partSettings[part.id]?.locked).length}个部位已锁定</span></div>
-                    <Button className="full-width" icon={Sparkles} onClick={refinePart} disabled={refining || partSettings[activePart.id]?.locked || !design.localEditPrompt.trim()}>{partSettings[activePart.id]?.locked ? '请先解锁该部位' : refining ? '正在局部修改…' : maskDataUrl ? '按选区生成局部修改' : '生成局部修改'}</Button>
+                    <Button className="full-width" icon={Sparkles} onClick={refinePart} disabled={!artworkSource || refining || partSettings[activePart.id]?.locked || !design.localEditPrompt.trim()}>{!artworkSource ? '请先生成效果图' : partSettings[activePart.id]?.locked ? '请先解锁该部位' : refining ? '正在局部修改…' : maskDataUrl ? '按选区生成局部修改' : '生成局部修改'}</Button>
                     {editError && <div className="inline-edit-error"><CircleStatus /><span>{editError}</span></div>}
                   </>
                 )}
               </div>
 
-              <div className="gate-check-panel">
-                <div className="gate-check-head">
-                  <div><strong>打样前验收</strong><span>{gateChecks.length}/{packagingGateItems.length}项完成</span></div>
-                  {gateReady ? <span className="gate-ready"><Check size={12} />可确认</span> : <span className="gate-pending">待补齐</span>}
-                </div>
-                <div className="gate-check-list">
-                  {packagingGateItems.map((item) => {
-                    const checked = gateChecks.includes(item.id)
-                    return (
-                      <label key={item.id} className={checked ? 'checked' : ''}>
-                        <input type="checkbox" checked={checked} onChange={() => toggleGateCheck(item.id)} />
-                        <span className="custom-check">{checked && <Check size={13} />}</span>
-                        <span><strong>{item.title}</strong><small>{item.detail}</small></span>
-                      </label>
-                    )
-                  })}
-                </div>
-              </div>
             </>
           ) : (
             <>
@@ -1600,7 +1823,7 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
                   const generated = !concept.id.startsWith('seed-')
                   return (
                     <div className={`version-history-row ${activeConcept.id === concept.id ? 'active' : ''} ${compareMode && compareConcept?.id === concept.id ? 'comparing' : ''}`} key={concept.id}>
-                      <button className="version-history-main" onClick={() => selectConcept(concept)}><span className="history-thumb"><img src={concept.image || baseMockup} alt="" /></span><span><strong>{concept.name}</strong><small>{concept.mode === 'draft' ? '编辑草稿' : concept.image ? 'AI效果图' : '初始方向'}</small></span></button>
+                      <button className="version-history-main" onClick={() => selectConcept(concept)}><span className="history-thumb">{concept.image || profile.fallbackImage ? <img src={concept.image || profile.fallbackImage} alt="" /> : <span className="generic-history-thumb"><Box size={16} /></span>}</span><span><strong>{concept.name}</strong><small>{concept.mode === 'draft' ? '编辑草稿' : concept.image ? 'AI效果图' : '初始方向'}</small></span></button>
                       <button className="version-compare-button" onClick={() => startComparison(concept)} disabled={activeConcept.id === concept.id} title="与当前版本对比" aria-label={`将${concept.name}设为对比版本`}><Columns2 size={14} /></button>
                       <button onClick={() => duplicateVersion(concept)} title="复制版本" aria-label={`复制${concept.name}`}><Copy size={14} /></button>
                       {generated && <button onClick={() => deleteVersion(concept.id)} title="删除版本" aria-label={`删除${concept.name}`}><Trash2 size={14} /></button>}
@@ -1614,10 +1837,8 @@ export function PackagingStudio({ state, updateState, notify, openAiSettings }) 
       </div>
 
       <section className="packaging-spec-band workbench-specs">
-        <div><span>瓶器</span><strong>{selectedPackaging.bottle}</strong><p>校验尺寸、材质与批次色差</p></div>
-        <div><span>出液结构</span><strong>{selectedPackaging.applicator}</strong><p>验证顺滑、出液均匀与倒置密封</p></div>
-        <div><span>纸盒工艺</span><strong>{design.finishes.join(' + ') || selectedPackaging.carton}</strong><p>确认抗压、运输保护与印刷可实现性</p></div>
-        <div><span>生产边界</span><strong>三视图 ≠ 印刷刀版</strong><p>正侧俯视只用于结构沟通，定稿前仍需印前审核</p></div>
+        {profile.specLabels.map((label, index) => <div key={label}><span>{label}</span><strong>{specValues[index]}</strong><p>{profile.specNotes[index]}</p></div>)}
+        <div><span>生产边界</span><strong>效果图 ≠ 生产文件</strong><p>定稿前仍需结构、法规、条码和印前审核</p></div>
       </section>
     </>
   )
@@ -1635,8 +1856,6 @@ export function PackagingDecision({ state }) {
     : concepts.find((item) => item.id === design.selectedConceptId) || concepts[0]
   const selectedPackaging = packagingOptions.find((item) => item.id === state.selectedPackaging) || packagingOptions[0]
   const palette = selectedConcept.palette || design.palette
-  const gateChecks = Array.isArray(design.gateChecks) ? design.gateChecks : []
-  const gateReady = packagingGateItems.every((item) => gateChecks.includes(item.id))
   return (
     <div className="packaging-decision">
       <div className="decision-heading"><div><span>当前2D方案</span><h2>{selectedConcept.name}</h2></div><span className={`decision-state ${design.confirmed2D ? '' : 'pending'}`}>{design.confirmed2D ? <Check size={12} /> : <ImageIcon size={12} />}{design.confirmed2D ? '2D已确认' : '待确认'}</span></div>
@@ -1652,15 +1871,9 @@ export function PackagingDecision({ state }) {
         <div><dt>瓶身材质</dt><dd>{selectedPackaging.bottle} + {selectedPackaging.applicator}</dd></div>
         <div><dt>包材成本</dt><dd>约 ¥{selectedPackaging.cost} / 套</dd></div>
         <div><dt>打样周期</dt><dd>{selectedPackaging.lead}</dd></div>
-        <div><dt>验收进度</dt><dd>{gateChecks.length}/{packagingGateItems.length}项{gateReady ? ' · 可进入打样' : ' · 待补齐'}</dd></div>
+        <div><dt>视觉版本</dt><dd>{design.confirmed2D ? '2D已确认' : '待确认'}</dd></div>
       </dl>
-      <div className="decision-gate-list">
-        {packagingGateItems.map((item) => {
-          const checked = gateChecks.includes(item.id)
-          return <div key={item.id} className={checked ? 'checked' : ''}><span>{checked ? <Check size={12} /> : null}</span><strong>{item.title}</strong></div>
-        })}
-      </div>
-      <div className="production-risk"><strong>生产风险提示</strong><p>先以2D方案冻结视觉方向，3D只用于按需检查立体效果；两者都不替代刀版、色值、条码和合规审核。</p></div>
+      <div className="production-risk"><strong>下一步</strong><p>2D确认后，请到“产品交付”集中完成打样前确认，再把方案发给开发或工厂。</p></div>
     </div>
   )
 }
